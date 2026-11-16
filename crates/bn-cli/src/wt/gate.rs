@@ -288,7 +288,7 @@ pub(crate) fn cmd_gate(
                 gate_summary(&r),
                 proof.as_deref().map(|p| format!(" → proof {p}")).unwrap_or_default()
             );
-            let _ = bn_core::commands::append_body(cfg, &ctx, "progress", &bullet, &today());
+            let _ = bn_core::task_doc::append_context(cfg, &ctx, "Validation", &bullet);
             if as_json {
                 let data = serde_json::json!({
                     "job": r.job,

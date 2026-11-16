@@ -75,7 +75,7 @@ pub fn save_agent(path: &Path, name: &str, scope: JobScope, content: &str) -> Re
             parsed.name
         ));
     }
-    crate::store::write_atomic(path, content.as_bytes())
+    crate::fs::write_atomic(path, content.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
@@ -169,7 +169,7 @@ pub fn create_agent(
         .map_err(|error| format!("that would not be a valid agent: {error}"))?;
 
     std::fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
-    crate::store::write_atomic(&path, source.as_bytes())
+    crate::fs::write_atomic(&path, source.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(path)
 }

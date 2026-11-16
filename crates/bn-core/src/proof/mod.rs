@@ -1,6 +1,6 @@
 //! Proof on disk: evidence for a branch's `done-when` criteria, kept beside its note.
 //!
-//! A proof (`p<N>`) is a file under `<note_dir>/proof/` with typed frontmatter — what kind of
+//! A proof (`p<N>`) is a file under `<artifact_dir>/proof/` with typed frontmatter — what kind of
 //! evidence, which criteria (`w<N>`) it speaks to, the commit it was taken at, who produced it —
 //! plus an optional attachment (a log, a screenshot). A verdict is a separate, attributed line in
 //! `proof/verdicts.jsonl`: someone other than the author accepts or rejects it.
@@ -21,7 +21,7 @@ pub mod tee;
 
 pub use gate::{check_done, head, readiness_now, DoneCheck, Head};
 pub use model::{Judgement, Kind, NewProof, Proof, Verdict};
-pub use readiness::{derive, Freshness, ItemReadiness, ItemState, Readiness};
+pub use readiness::{derive, Criterion, Freshness, ItemReadiness, ItemState, Readiness};
 pub use render::render_proof_md;
 pub use store::{add, dir, judge, link, list, verdicts, Listing, ProofError};
 

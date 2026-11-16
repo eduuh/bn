@@ -60,10 +60,6 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
         CmdAutomation::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
         },
-        CmdAutomation::Sync { yes } => {
-            let ctx = resolve_or_exit(cfg);
-            emit_sync(cfg, &ctx, yes, json);
-        }
         CmdAutomation::Attn {
             action,
             type_filter,
@@ -153,11 +149,6 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
         },
         CmdAutomation::Agent { action } => match action {
             Some(AgentCmd::Ingest { reingest }) => emit_agent_ingest(cfg, reingest, json),
-            Some(AgentCmd::Digest { repo, branch, yes }) => {
-                let ctx =
-                    target_ctx(cfg, repo, branch).unwrap_or_else(|| fail("Not in a git repo"));
-                emit_agent_digest(cfg, &ctx, yes, json);
-            }
             Some(AgentCmd::Supervise { idle, stuck }) => {
                 emit_agent_supervise(cfg, idle, stuck, json)
             }
@@ -341,7 +332,6 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                     ),
                 }
             }
-            Some(AgentCmd::MemoryHook) => emit_memory_hook(cfg),
             Some(AgentCmd::Launch {
                 harness,
                 host,

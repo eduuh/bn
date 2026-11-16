@@ -1,6 +1,5 @@
 use super::*;
-use crate::model::{Item, Note};
-use crate::resolver::{Config, RepoBranch, Resolved};
+use crate::resolver::{Config, Resolved};
 
 const AGENT: &str = "bn:feat";
 const HUMAN: &str = "human:alice";
@@ -11,25 +10,16 @@ fn setup(temp: &std::path::Path) -> (Config, Resolved) {
         repo: "bn".into(),
         branch: "feat".into(),
     };
-    std::fs::create_dir_all(cfg.note_dir(&ctx)).unwrap();
-    let mut note = Note::new(
-        RepoBranch {
-            repo: "bn",
-            branch: "feat",
-        },
-        "2026-09-24",
-        "testhost",
-    );
-    note.front.done_when = vec![item("w1", "tests pass"), item("w2", "docs updated")];
-    crate::store::save(&note, &cfg.note_file(&ctx)).unwrap();
+    std::fs::create_dir_all(cfg.artifact_dir(&ctx)).unwrap();
+    let task = crate::task_store::capture(&cfg, "ship evidence", Some(ctx.rb()), "test").unwrap();
+    crate::task_doc::write(
+        &cfg,
+        &task,
+        "## Done When\n- [ ] tests pass\n- [ ] docs updated\n".into(),
+        None,
+    )
+    .unwrap();
     (cfg, ctx)
-}
-
-fn item(id: &str, text: &str) -> Item {
-    serde_json::from_value(serde_json::json!({
-        "id": id, "text": text, "created": "2026-09-24", "done": false
-    }))
-    .unwrap()
 }
 
 fn new(kind: Kind, for_: &[&str], sha: &str) -> NewProof {
@@ -51,17 +41,189 @@ fn new(kind: Kind, for_: &[&str], sha: &str) -> NewProof {
 }
 
 fn ready_at(cfg: &Config, ctx: &Resolved, head: &str, f: Freshness) -> Readiness {
-    let note = crate::store::read(&cfg.note_file(ctx)).unwrap();
+    let criteria = super::gate::criteria(cfg, ctx);
     let listing = list(cfg, ctx);
     let (v, _) = verdicts(cfg, ctx);
-    derive(
-        &note.front.done_when,
-        &listing.proofs,
-        &v,
-        Some(head),
-        f,
-        &|_, _| true,
+    derive(&criteria, &listing.proofs, &v, Some(head), f, &|_, _| true)
+}
+
+fn accepted_task_proof(temp: &std::path::Path) -> (Config, Resolved) {
+    let (cfg, ctx) = setup(temp);
+    std::fs::write(
+        cfg.tasks_file(),
+        "ship evidence id:t6 uid:A repo:bn branch:feat doc:t1.md\n",
     )
+    .unwrap();
+    add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    (cfg, ctx)
+}
+
+#[test]
+fn task_identity_proof_survives_union_merge_alias_healing() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = accepted_task_proof(temp.path());
+    let original = std::fs::read_to_string(cfg.tasks_file()).unwrap();
+    std::fs::write(
+        cfg.tasks_file(),
+        format!("merged task id:t6 uid:B repo:bn branch:other doc:b.md\n{original}"),
+    )
+    .unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    assert_eq!(task.id(), Some("t7"));
+    assert_eq!(task.uid(), Some("A"));
+    assert_eq!(task.meta("doc"), Some("t1.md"));
+    assert!(matches!(
+        ready_at(&cfg, &ctx, "abc", Freshness::Exact).items[0].state,
+        ItemState::Accepted { .. }
+    ));
+}
+
+#[test]
+fn task_identity_proof_cannot_transfer_to_another_uid_reusing_the_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = accepted_task_proof(temp.path());
+    std::fs::write(
+        cfg.tasks_file(),
+        "ship evidence id:t6 uid:B repo:bn branch:feat doc:t1.md\n",
+    )
+    .unwrap();
+    assert_eq!(
+        ready_at(&cfg, &ctx, "abc", Freshness::Exact).items[0].state,
+        ItemState::Unproven
+    );
+}
+
+#[test]
+fn task_identity_missing_uid_keeps_criteria_unproven_and_refuses_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = accepted_task_proof(temp.path());
+    let legacy = "ship evidence id:t6 repo:bn branch:feat doc:t1.md\n";
+    std::fs::write(cfg.tasks_file(), legacy).unwrap();
+    let readiness = ready_at(&cfg, &ctx, "abc", Freshness::Exact);
+    assert_eq!(readiness.items.len(), 2);
+    assert!(readiness
+        .items
+        .iter()
+        .all(|item| item.state == ItemState::Unproven));
+    assert!(matches!(
+        add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t"),
+        Err(ProofError::Invalid(_))
+    ));
+    assert!(matches!(
+        link(&cfg, &ctx, "p1", &["w1".into()], AGENT),
+        Err(ProofError::Invalid(_))
+    ));
+    assert_eq!(std::fs::read_to_string(cfg.tasks_file()).unwrap(), legacy);
+}
+
+#[test]
+fn review_regression_accepted_proof_follows_content_not_checklist_position() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = setup(temp.path());
+    add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified tests",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    for checklist in [
+        "## Done When\n- [ ] docs updated\n",
+        "## Done When\n- [ ] docs updated\n- [ ] tests pass\n",
+        "## Done When\n- [ ] unrelated requirement\n- [ ] docs updated\n",
+    ] {
+        crate::task_doc::write(&cfg, &task, checklist.into(), None).unwrap();
+        let readiness = ready_at(&cfg, &ctx, "abc", Freshness::Exact);
+        for item in readiness.items {
+            assert_eq!(
+                matches!(item.state, ItemState::Accepted { .. }),
+                item.text == "tests pass",
+                "evidence transferred to {} after editing {checklist:?}",
+                item.text,
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_unbound_proof_cannot_accept_current_criteria() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = setup(temp.path());
+    let mut proof = add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    proof.criteria.clear();
+    let criteria = super::gate::criteria(&cfg, &ctx);
+    let (verdicts, _) = verdicts(&cfg, &ctx);
+    let readiness = derive(
+        &criteria,
+        &[proof],
+        &verdicts,
+        Some("abc"),
+        Freshness::Exact,
+        &|_, _| true,
+    );
+    assert_eq!(readiness.items[0].state, ItemState::Unproven);
+}
+
+#[test]
+fn linking_cannot_silently_rebind_accepted_evidence_after_an_edit() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = setup(temp.path());
+    add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    crate::task_doc::write(
+        &cfg,
+        &task,
+        "## Done When\n- [ ] unrelated requirement\n".into(),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        link(&cfg, &ctx, "p1", &["w1".into()], AGENT),
+        Err(ProofError::Invalid(_))
+    ));
+    assert_eq!(
+        ready_at(&cfg, &ctx, "abc", Freshness::Exact).items[0].state,
+        ItemState::Unproven
+    );
 }
 
 #[test]
@@ -106,7 +268,7 @@ fn add_numbers_files_and_round_trips_frontmatter() {
         listing.unregistered.is_empty(),
         "attachments are not strays"
     );
-    assert!(cfg.note_dir(&ctx).join("PROOF.md").exists());
+    assert!(cfg.artifact_dir(&ctx).join("PROOF.md").exists());
 }
 
 #[test]
@@ -251,7 +413,15 @@ fn a_failed_run_never_proves_done_and_hand_ticks_stay_visible() {
         ItemState::Accepted { .. }
     ));
 
-    crate::commands::done(&cfg, &ctx, "w2", "2026-09-24", None).unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    let doc = crate::task_doc::read(&cfg, &task).unwrap();
+    crate::task_doc::write(
+        &cfg,
+        &task,
+        doc.text.replace("- [ ] docs updated", "- [x] docs updated"),
+        None,
+    )
+    .unwrap();
     let r = ready_at(&cfg, &ctx, "abc", Freshness::Exact);
     let w2 = r.item("w2").unwrap();
     assert!(w2.hand_ticked, "ticked by hand without evidence");
@@ -327,20 +497,13 @@ fn concurrent_adds_get_distinct_ids() {
 fn done_on_a_criterion_follows_the_policy() {
     let temp = tempfile::tempdir().unwrap();
     let (mut cfg, ctx) = setup(temp.path());
-    // A todo whose text overlaps a criterion: a substring query then isn't a criterion.
-    crate::commands::add(&cfg, &ctx, "todo", "update docs index", None, "2026-09-24").unwrap();
-
     assert_eq!(cfg.proof_done_requires, "warn", "warn is the default");
     assert!(matches!(check_done(&cfg, &ctx, "w1"), DoneCheck::Warn(m) if m.contains("no proof")));
     assert!(matches!(
         check_done(&cfg, &ctx, "tests pass"),
         DoneCheck::Warn(_)
     ));
-    assert_eq!(
-        check_done(&cfg, &ctx, "docs"),
-        DoneCheck::Clear,
-        "ambiguous with a todo"
-    );
+    assert!(matches!(check_done(&cfg, &ctx, "docs"), DoneCheck::Warn(_)));
     assert_eq!(
         check_done(&cfg, &ctx, "t1"),
         DoneCheck::Clear,
@@ -370,19 +533,11 @@ fn unknown_commits_are_never_current_under_exact() {
     no_sha.sha = None;
     add(&cfg, &ctx, &no_sha, "t").unwrap();
     judge(&cfg, &ctx, "p1", HUMAN, Judgement::Accept, "ok", None, "t").unwrap();
-    let note = crate::store::read(&cfg.note_file(&ctx)).unwrap();
+    let criteria = super::gate::criteria(&cfg, &ctx);
     let listing = list(&cfg, &ctx);
     let (v, _) = verdicts(&cfg, &ctx);
     let at = |head: Option<&str>, f| {
-        derive(
-            &note.front.done_when,
-            &listing.proofs,
-            &v,
-            head,
-            f,
-            &|_, _| true,
-        )
-        .items[0]
+        derive(&criteria, &listing.proofs, &v, head, f, &|_, _| true).items[0]
             .state
             .clone()
     };

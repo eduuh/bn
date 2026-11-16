@@ -2,14 +2,14 @@
 //! history of "what got done": completed branch-note todos (`bn done`), achieved daily goals,
 //! resolved attention items, and landed/merged orchestrate work.
 //!
-//! Each [`CompletedItem`] carries a [`NoteLink`] so a finished item is traceable back to its full
+//! Each [`CompletedItem`] carries a [`ContextLink`] so a finished item is traceable back to its full
 //! context from anywhere — the branch note's **local path** (open on this machine) *and* its
 //! **remote URL** (the synced branch-notes remote). The fold is pure over its inputs plus a
-//! [`NoteLinker`] (the git/fs resolver, injected so the ranking + kind-mapping stay unit-testable);
-//! [`crate::rollups::FsNoteLinker`] supplies the filesystem-backed links.
+//! [`ContextLinker`] (the git/fs resolver, injected so the ranking + kind-mapping stay unit-testable);
+//! [`crate::rollups::FsContextLinker`] supplies the filesystem-backed links.
 
 use crate::attention::AttnItem;
-use crate::model::Item;
+use crate::daily::Item;
 use crate::orchestrate::{ItemStatus, QueueItem};
 use crate::util;
 use serde::Serialize;
@@ -18,7 +18,7 @@ use serde::Serialize;
 /// anywhere. Both are best-effort — a note that no longer exists locally, or a notes repo with no
 /// git remote, simply leaves the corresponding field `None` and the UI omits that jump.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct NoteLink {
+pub struct ContextLink {
     /// The absolute path of the branch note on **this** machine (`~/projects/branch-notes/…`),
     /// for the "open locally" jump. `None` when the note isn't present on this host.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -29,27 +29,27 @@ pub struct NoteLink {
     pub remote_url: Option<String>,
 }
 
-impl NoteLink {
+impl ContextLink {
     /// Whether either jump is available — the UI hides the note-links row entirely when neither is.
     pub fn is_empty(&self) -> bool {
         self.local_path.is_none() && self.remote_url.is_none()
     }
 }
 
-/// Resolves a `(repo, branch)` to its [`NoteLink`]. Injected into [`build_completed`] so the fold
+/// Resolves a `(repo, branch)` to its [`ContextLink`]. Injected into [`build_completed`] so the fold
 /// itself stays pure and unit-testable (tests pass a stub); the real
-/// [`crate::rollups::FsNoteLinker`] shells git + touches the filesystem.
-pub trait NoteLinker {
+/// [`crate::rollups::FsContextLinker`] shells git + touches the filesystem.
+pub trait ContextLinker {
     /// The note-link for `repo`/`branch`. `branch` is the note-key form (slashes already dashed).
-    fn link(&self, repo: &str, branch: &str) -> NoteLink;
+    fn link(&self, repo: &str, branch: &str) -> ContextLink;
 }
 
 /// A no-op linker — every note-link comes back empty. The default when no note location is known
 /// (and a convenient stub for tests that don't exercise linking).
 pub struct NoLinker;
-impl NoteLinker for NoLinker {
-    fn link(&self, _repo: &str, _branch: &str) -> NoteLink {
-        NoteLink::default()
+impl ContextLinker for NoLinker {
+    fn link(&self, _repo: &str, _branch: &str) -> ContextLink {
+        ContextLink::default()
     }
 }
 
@@ -109,7 +109,7 @@ pub struct CompletedItem {
     /// Epoch-seconds the item completed — the recency sort key.
     pub completed: i64,
     /// The branch note's local path + remote URL (the "open locally / remotely" jumps).
-    pub note: NoteLink,
+    pub note: ContextLink,
 }
 
 /// A completed branch-note todo, gathered from the notes (see [`crate::rollups::completed_todos`]).
@@ -165,7 +165,7 @@ fn one_line(text: &str, max: usize) -> String {
 
 /// Build the unified, most-recent-first list of completed items from every source, resolving each
 /// item's branch-note jump through `linker`. Pure over `(src, linker)`.
-pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<CompletedItem> {
+pub fn build_completed(src: &CompletedSources, linker: &dyn ContextLinker) -> Vec<CompletedItem> {
     let mut out: Vec<CompletedItem> = Vec::new();
 
     // Completed branch-note todos ----------------------------------------
@@ -203,7 +203,7 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
             });
         let (repo, branch, note) = match linked {
             Some((r, b)) => (Some(r.to_string()), Some(b.to_string()), linker.link(r, b)),
-            None => (None, None, NoteLink::default()),
+            None => (None, None, ContextLink::default()),
         };
         out.push(CompletedItem {
             id: format!("goal:{}", g.id),
@@ -223,7 +223,7 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
     for a in src.attn {
         let note = match (a.repo.as_deref(), a.branch.as_deref()) {
             (Some(r), Some(b)) if !r.is_empty() && !b.is_empty() => linker.link(r, b),
-            _ => NoteLink::default(),
+            _ => ContextLink::default(),
         };
         out.push(CompletedItem {
             id: format!("attn:{}", a.id),
@@ -264,7 +264,7 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
             link: Some(format!("https://github.com/{}/pull/{}", pr.repo, pr.number)),
             detail: None,
             completed: pr.merged_ts,
-            note: NoteLink::default(),
+            note: ContextLink::default(),
         });
     }
 
@@ -284,7 +284,7 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
         }
         let note = match item.branch.as_deref() {
             Some(b) if !b.is_empty() => linker.link(&item.repo, b),
-            _ => NoteLink::default(),
+            _ => ContextLink::default(),
         };
         out.push(CompletedItem {
             id: format!("merged:{}/{}", item.repo, item.id),

@@ -40,22 +40,15 @@ pub(crate) fn append_controller_worker_event(
     controller::append_worker_event(&event)
 }
 
-fn recorded_worker_session_id(cfg: &Config, ctx: &Resolved) -> Option<String> {
+fn recorded_worker_session_id(_cfg: &Config, ctx: &Resolved) -> Option<String> {
     std::env::var("BN_WORKER_SESSION_ID")
         .ok()
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())
         .or_else(|| {
-            bn_core::store::read(&cfg.note_file(ctx))
-                .ok()?
-                .front
-                .collab
-                .iter()
-                .rev()
-                .find_map(|item| {
-                    let rest = item.text.trim().strip_prefix("agent-session:")?;
-                    rest.split_whitespace().nth(1).map(str::to_string)
-                })
+            bn_core::cost::launch_records().into_iter().rev()
+                .find(|record| record.repo == ctx.repo && record.branch == ctx.branch)
+                .map(|record| record.session_id)
         })
 }
 

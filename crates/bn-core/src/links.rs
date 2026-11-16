@@ -12,11 +12,11 @@
 //! reads for directory frecency), so "most used" means the same thing in both pickers.
 //!
 //! Storage is fenced-YAML frontmatter over a regenerated body, the same shape as
-//! [`crate::inbox`], so [`crate::store::parse_frontmatter`] is reused and the file stays
+//! [`crate::inbox`], so [`crate::markdown::parse_frontmatter`] is reused and the file stays
 //! hand-editable — `bn links edit` is a supported way to fix a name.
 
+use crate::fs::StoreError;
 use crate::resolver::Config;
-use crate::store::StoreError;
 use crate::util::days_since;
 
 pub mod check;
@@ -146,7 +146,7 @@ pub fn read(cfg: &Config) -> Vec<Link> {
     let Ok(text) = std::fs::read_to_string(cfg.links_file()) else {
         return vec![];
     };
-    crate::store::parse_frontmatter::<LinksFront>(&text)
+    crate::markdown::parse_frontmatter::<LinksFront>(&text)
         .map(|f| deduplicate(f.items))
         .unwrap_or_default()
 }
@@ -184,7 +184,7 @@ pub fn add(
     if !valid_url(&url) {
         return Err(LinkError::BadUrl(url));
     }
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
     let name = name
         .map(str::trim)
@@ -252,7 +252,7 @@ fn deduplicate(items: Vec<Link>) -> Vec<Link> {
 
 /// Remove the link matching `needle` (id or name, resolved as in [`resolve`]).
 pub fn remove(cfg: &Config, needle: &str) -> Result<Link, LinkError> {
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
     let id = resolve(&items, needle)?.id.clone();
     let pos = items
@@ -267,7 +267,7 @@ pub fn remove(cfg: &Config, needle: &str) -> Result<Link, LinkError> {
 /// Add and drop tags on one link without restating the rest — the way into and out of a group.
 /// Tags are lowercased; adding one it already has, or dropping one it lacks, is a no-op.
 pub fn retag(cfg: &Config, id: &str, add: &[String], drop: &[String]) -> Result<Link, LinkError> {
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
     let link = items
         .iter_mut()
@@ -307,7 +307,7 @@ pub fn rename(cfg: &Config, id: &str, name: &str) -> Result<Link, LinkError> {
 
 /// Apply `f` to the link with this id under the store lock, and write it back.
 fn edit(cfg: &Config, id: &str, f: impl FnOnce(&mut Link)) -> Result<Link, LinkError> {
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
     let link = items
         .iter_mut()
@@ -330,7 +330,7 @@ pub fn pending<'a>(items: &'a [Link], today: &str) -> Vec<&'a Link> {
 
 /// Clear the new mark on these links: they have been looked at. Returns how many changed.
 pub fn mark_reviewed(cfg: &Config, ids: &[String]) -> Result<usize, LinkError> {
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
     let mut changed = 0;
     for l in items.iter_mut().filter(|l| l.new && ids.contains(&l.id)) {
@@ -345,7 +345,7 @@ pub fn mark_reviewed(cfg: &Config, ids: &[String]) -> Result<usize, LinkError> {
 
 /// Record an open: `uses += 1`, `last = today`. This is the only thing that changes rank.
 pub fn touch(cfg: &Config, id: &str, today: &str) -> Result<Link, LinkError> {
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
     let link = items
         .iter_mut()
@@ -419,7 +419,7 @@ pub fn set_expiry(cfg: &Config, id: &str, today: &str, days: i64) -> Result<Link
 /// Delete every expired link, returning what went. The only thing that deletes on expiry —
 /// [`ranked`] merely hides them, so an expiry can be undone by editing the date until pruned.
 pub fn prune(cfg: &Config, today: &str) -> Result<Vec<Link>, LinkError> {
-    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let _lock = crate::fs::FileLock::acquire(&cfg.links_file());
     let items = read(cfg);
     let (gone, kept): (Vec<Link>, Vec<Link>) = items.into_iter().partition(|l| expired(l, today));
     if !gone.is_empty() {

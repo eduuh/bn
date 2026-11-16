@@ -2,44 +2,52 @@
 //!
 //! A task line is one line. Everything that makes it *SMART* — why it matters, the done-when
 //! checklist, what an investigator found, what is still unknown — needs somewhere durable to live.
-//! That somewhere is the notes tree, where it already syncs with the notes git repo, is indexed by
-//! [`crate::recall`], and is readable offline.
-//!
-//! # Two locations, one resolver
+//! Task context lives independently of its current branch binding:
 //!
 //! ```text
-//! <work_root>/tasks/<id>.md                          staging — before pickup
-//! <personal_root>/<machine>/<repo>/<branch>/task.md  after pickup, beside the branch note
+//! <tasks_dir>/context/<doc-name>.md
 //! ```
 //!
-//! [`Config::note_dir`] needs `(repo, branch)`, and a freshly created task has no branch until it
-//! is picked up into a worktree — so "in the note folder" is unsatisfiable at creation time, and
-//! the doc starts in staging.
-//!
-//! On pickup the doc is **copied**, not moved, and [`doc_path`] prefers the note-dir copy. A move
-//! would leave every previously-read path dangling; a copy plus a resolver means a stale reference
-//! still resolves to something real. For the same reason the task's `doc:` meta holds a *file
-//! name*, never a path: a bare name cannot point at the wrong directory.
-//!
-//! # The document is a note body
-//!
-//! `## Done When` is the shipped [`Section::DoneWhen`], read through
-//! [`crate::store::section_bullets`] — the same parser branch notes use. So a task doc renders with
-//! the machinery that already exists, and the SMART gate's "measurable" check (#998) is a call, not
-//! a new parser.
+//! Reads support historical task documents; [`ensure`] imports their content and attachments
+//! before a mutation or branch rebinding, without changing historical files. The `doc:` meta
+//! stores a file name, not a branch-specific path. Markdown sections use the shared renderer.
 
-use crate::model::Section;
 use crate::resolver::{Config, Resolved};
 use crate::todo::Task;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The meta key holding a task's context-doc file name.
 pub const DOC_KEY: &str = "doc";
 
+/// Append task context without creating or reading any session-history artifact.
+pub fn append_context(
+    cfg: &Config,
+    ctx: &Resolved,
+    heading: &str,
+    content: &str,
+) -> std::io::Result<()> {
+    let task = crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
+        .ok_or_else(|| std::io::Error::other("no governing task; capture or claim a task first"))?;
+    let path = ensure(cfg, &task)?;
+    let _lock = crate::todo::lock_required(&path)?;
+    let text = std::fs::read_to_string(&path)?;
+    let heading = format!("## {heading}");
+    if crate::render::section_content(&text, &heading)
+        .iter()
+        .any(|line| line.trim() == content.trim())
+    {
+        return Ok(());
+    }
+    crate::fs::write_atomic(
+        &path,
+        crate::render::append_to_section(&text, &heading, content).as_bytes(),
+    )
+}
+
 /// A task's context doc, parsed only as far as callers need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskDoc {
-    /// Where it was read from — the note-dir copy when one exists, else staging.
+    /// Canonical context path, or a historical task-document path awaiting import.
     pub path: PathBuf,
     /// The whole file, frontmatter included.
     pub text: String,
@@ -51,7 +59,7 @@ impl TaskDoc {
     /// Empty for an untouched template — the placeholder bullet is skipped by the shared parser —
     /// which is exactly what makes a task fail the SMART gate until someone fills it in.
     pub fn done_when(&self) -> Vec<(bool, String)> {
-        crate::store::section_bullets(&self.text, Section::DoneWhen)
+        crate::markdown::section_bullets(&self.text, "## Done When")
     }
 
     /// Whether the doc states at least one acceptance criterion.
@@ -103,9 +111,9 @@ pub fn staging_path(cfg: &Config, name: &str) -> PathBuf {
     cfg.tasks_dir().join(name)
 }
 
-/// `<note_dir>/task.md` — where a doc lives once its task has a worktree.
-pub fn note_copy_path(cfg: &Config, repo: &str, branch: &str) -> PathBuf {
-    cfg.note_dir(&Resolved {
+/// `<artifact_dir>/task.md` — where a doc lives once its task has a worktree.
+fn legacy_doc_path(cfg: &Config, repo: &str, branch: &str) -> PathBuf {
+    cfg.artifact_dir(&Resolved {
         repo: repo.to_string(),
         branch: branch.to_string(),
     })
@@ -119,15 +127,19 @@ fn doc_name(task: &Task) -> Option<String> {
         .or_else(|| task.id().map(staging_name))
 }
 
-/// Where this task's context doc actually is: **the note-dir copy if it exists, else staging.**
+/// Resolve canonical context first, then historical branch documents and staging.
 ///
 /// `None` only when the task has neither a `doc:` nor an `id:` to derive one from. The returned
 /// path may not exist yet — [`ensure`] is what creates it.
 pub fn doc_path(cfg: &Config, task: &Task) -> Option<PathBuf> {
     let name = doc_name(task)?;
+    let stable = cfg.tasks_dir().join("context").join(&name);
+    if stable.is_file() {
+        return Some(stable);
+    }
     if let (Some(repo), Some(branch)) = (task.meta("repo"), task.meta("branch")) {
         if !repo.is_empty() && !branch.is_empty() {
-            let in_note = note_copy_path(cfg, repo, branch);
+            let in_note = legacy_doc_path(cfg, repo, branch);
             if in_note.exists() {
                 return Some(in_note);
             }
@@ -187,19 +199,27 @@ pub fn template(task: &Task) -> String {
 /// Never overwrites: an existing doc is the task's accumulated context, and this is called on
 /// paths that may run more than once.
 pub fn ensure(cfg: &Config, task: &Task) -> std::io::Result<PathBuf> {
-    let path = doc_path(cfg, task).ok_or_else(|| {
+    let source = doc_path(cfg, task).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "task has no id or doc: to derive a context doc from",
         )
     })?;
-    if path.exists() {
-        return Ok(path);
-    }
+    let name = doc_name(task).ok_or_else(|| std::io::Error::other("task has no document name"))?;
+    let path = cfg.tasks_dir().join("context").join(name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, template(task))?;
+    let _lock = crate::todo::lock_required(&path)?;
+    if path.is_file() {
+        return Ok(path);
+    }
+    if source.is_file() {
+        crate::task_attach::adopt_beside(&source, &path)?;
+        crate::fs::write_atomic(&path, &std::fs::read(&source)?)?;
+    } else {
+        crate::fs::write_atomic(&path, template(task).as_bytes())?;
+    }
     Ok(path)
 }
 
@@ -237,7 +257,7 @@ fn escape_inline(text: &str) -> String {
 
 /// Push captured prose down below the document's own structure.
 ///
-/// The doc's headings are load-bearing — [`crate::store::section_bullets`] finds `## Done When`
+/// The doc's headings are load-bearing — [`crate::render::section_bullets`] finds `## Done When`
 /// anywhere in the file, so a paste containing one would hand the SMART gate acceptance criteria
 /// nobody wrote. Demoting every ATX heading in captured text to `####` keeps the paste readable
 /// while making it structurally inert. Fenced code is left alone: a `#` in a shell snippet is a
@@ -314,8 +334,8 @@ pub fn capture(
     body: Option<&str>,
     links: &[Link],
 ) -> Result<TaskDoc, DocError> {
-    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
-    let _lock = crate::todo::lock(&path);
+    let path = ensure(cfg, task).map_err(DocError::Io)?;
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
     if let Some(body) = body.map(str::trim).filter(|b| !b.is_empty()) {
         text = replace_under(&text, CONTEXT_HEADING, &demote_headings(body));
@@ -360,8 +380,8 @@ pub fn sync_attachments(cfg: &Config, task: &Task) -> Result<TaskDoc, DocError> 
         }
         out
     };
-    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
-    let _lock = crate::todo::lock(&path);
+    let path = ensure(cfg, task).map_err(DocError::Io)?;
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let current = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
     let updated = replace_under(&current, ATTACHMENTS_HEADING, &body);
     if let Some(parent) = path.parent() {
@@ -372,50 +392,6 @@ pub fn sync_attachments(cfg: &Config, task: &Task) -> Result<TaskDoc, DocError> 
         path,
         text: updated,
     })
-}
-
-/// Copy a staged context doc next to its branch note — the pickup step.
-///
-/// A **copy**, deliberately: [`doc_path`] then prefers the note-dir version, while any reference
-/// to the staging path still resolves. Returns the note-dir path when a copy happened, `None` when
-/// there was nothing to copy or the task has no worktree yet. Never overwrites an existing
-/// note-dir doc, which would discard work an agent already recorded there.
-pub fn adopt_into_note(cfg: &Config, task: &Task) -> std::io::Result<Option<PathBuf>> {
-    let (Some(repo), Some(branch)) = (task.meta("repo"), task.meta("branch")) else {
-        return Ok(None);
-    };
-    if repo.is_empty() || branch.is_empty() {
-        return Ok(None);
-    }
-    let target = note_copy_path(cfg, repo, branch);
-    let Some(name) = doc_name(task) else {
-        return Ok(None);
-    };
-    let staged = staging_path(cfg, &name);
-    if target.exists() {
-        // The doc is already here, but its files may not be — an earlier pickup predating
-        // attachments, or a doc an agent created before anything was attached to the staged one.
-        if staged.exists() {
-            crate::task_attach::adopt_beside(&staged, &target)?;
-        }
-        return Ok(Some(target));
-    }
-    if !staged.exists() {
-        return Ok(None);
-    }
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::copy(&staged, &target)?;
-    // The doc's manifest names files relative to wherever the doc is, so the files have to make
-    // the same move — otherwise a picked-up task documents attachments nothing can resolve.
-    crate::task_attach::adopt_beside(&staged, &target)?;
-    Ok(Some(target))
-}
-
-/// Whether `path` is a task doc living beside a branch note (as opposed to in staging).
-pub fn is_note_copy(path: &Path) -> bool {
-    path.file_name().is_some_and(|n| n == "task.md")
 }
 
 /// A content fingerprint used as the `If-Match` version tag on doc writes. SipHash via
@@ -503,8 +479,8 @@ pub fn append_section(
     heading: &str,
     text: &str,
 ) -> Result<TaskDoc, DocError> {
-    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
-    let _lock = crate::todo::lock(&path);
+    let path = ensure(cfg, task).map_err(DocError::Io)?;
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let current = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
     let updated = append_under(&current, heading, text);
     if let Some(parent) = path.parent() {
@@ -527,8 +503,8 @@ pub fn write(
     new_text: String,
     if_match: Option<&str>,
 ) -> Result<TaskDoc, DocError> {
-    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
-    let _lock = crate::todo::lock(&path);
+    let path = ensure(cfg, task).map_err(DocError::Io)?;
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let landed = std::fs::read_to_string(&path).ok().map(|t| version_of(&t));
     if let (Some(want), Some(have)) = (if_match, landed.as_deref()) {
         if want != have {
@@ -548,6 +524,53 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_document_mutations_share_the_rmw_lock() {
+        crate::test_support::with_state_dir_path(|root| {
+            let cfg = crate::test_support::config(root);
+            let ctx = Resolved {
+                repo: "repo".into(),
+                branch: "work".into(),
+            };
+            let task = crate::task_store::capture(
+                &cfg,
+                "Preserve concurrent edits",
+                Some(ctx.rb()),
+                "test",
+            )
+            .unwrap();
+            let path = ensure(&cfg, &task).unwrap();
+            let lock = crate::todo::lock(&path);
+            let original = std::fs::read_to_string(&path).unwrap();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = append_context(&cfg, &ctx, "Progress", "Concurrent progress");
+                done_tx.send(result).unwrap();
+            });
+            started_rx.recv().unwrap();
+            let early = done_rx.recv_timeout(std::time::Duration::from_millis(250));
+            std::fs::write(
+                &path,
+                format!("{original}\n## Context\n\nConcurrent capture\n"),
+            )
+            .unwrap();
+            drop(lock);
+            let completed_early = early.is_ok();
+            early.unwrap_or_else(|_| done_rx.recv().unwrap()).unwrap();
+            worker.join().unwrap();
+            let landed = std::fs::read_to_string(path).unwrap();
+            assert!(
+                !completed_early,
+                "append bypassed the document writer's lock"
+            );
+            assert!(
+                landed.contains("Concurrent capture") && landed.contains("Concurrent progress")
+            );
+        });
+    }
 
     fn task(id: &str) -> Task {
         crate::todo::Task::new_todo(id, "fix the reconnect storm", None, "", "web", "2026-08-09")
@@ -686,12 +709,44 @@ mod tests {
 
         task.set_meta_raw("repo", "atlas");
         task.set_meta_raw("branch", "fix-sse");
-        let landed = adopt_into_note(&cfg, &task).expect("adopt").expect("path");
+        let landed = ensure(&cfg, &task).expect("stable path");
 
-        assert!(landed.ends_with("task.md"));
+        assert!(landed.ends_with("context/t5.md"));
         let files = crate::task_attach::list(&cfg, &task);
         assert_eq!(files.len(), 1, "attachments must resolve after pickup");
         assert_eq!(files[0].name, "trace.log");
         assert!(files[0].path.starts_with(landed.parent().expect("parent")));
+    }
+
+    #[test]
+    fn legacy_task_context_and_attachments_survive_branch_rebinding() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = cfg(root.path());
+        let mut task = task("t6");
+        task.set_meta_raw("repo", "atlas");
+        task.set_meta_raw("branch", "old");
+        let legacy = legacy_doc_path(&cfg, "atlas", "old");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "## Investigation\n\nLatest findings\n").unwrap();
+        crate::task_attach::save(&cfg, &task, "trace.log", b"evidence").unwrap();
+        let store = crate::task_store::task_store(&cfg);
+        store.append(&task).unwrap();
+        assert!(crate::task_store::claim(&cfg, "t6", "atlas", "new").unwrap());
+        let file = store.load().unwrap();
+        let task = file.tasks().find(|task| task.id() == Some("t6")).unwrap();
+        let stable = cfg.tasks_dir().join("context/t6.md");
+        assert_eq!(doc_path(&cfg, task), Some(stable));
+        assert_eq!(
+            read(&cfg, task)
+                .unwrap()
+                .section("Investigation")
+                .as_deref(),
+            Some("Latest findings")
+        );
+        assert_eq!(crate::task_attach::list(&cfg, task)[0].name, "trace.log");
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "## Investigation\n\nLatest findings\n"
+        );
     }
 }

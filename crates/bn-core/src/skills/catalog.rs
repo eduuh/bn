@@ -166,7 +166,7 @@ impl std::error::Error for RuntimeSkillError {
 /// Split `---\n<yaml>\n---\n<body>` into a [`Skill`]. `name` falls back to the file stem.
 pub fn parse_skill(text: &str, stem: &str) -> Result<Skill, SkillParseError> {
     let (yaml, body) =
-        crate::store::split_frontmatter(text).ok_or(SkillParseError::MissingFrontmatter)?;
+        crate::markdown::split_frontmatter(text).ok_or(SkillParseError::MissingFrontmatter)?;
     let front: SkillFront =
         serde_yaml::from_str(yaml).map_err(|error| SkillParseError::InvalidFrontmatter {
             message: error.to_string(),
@@ -279,7 +279,7 @@ fn load_skill_entries(dir: &Path) -> Result<Vec<SkillEntry>, SkillCatalogError> 
 /// The `name:` a skill file declares, read without parsing the rest, so a file that fails to parse
 /// can still be matched to the skill it was meant to be.
 fn claimed_name(text: &str) -> Option<String> {
-    let (yaml, _) = crate::store::split_frontmatter(text)?;
+    let (yaml, _) = crate::markdown::split_frontmatter(text)?;
     yaml.lines().find_map(|line| {
         let value = line.strip_prefix("name:")?.trim().trim_matches(['"', '\'']);
         (!value.is_empty()).then(|| value.to_string())
@@ -620,24 +620,11 @@ mod tests {
     #[test]
     fn shipped_prompts_reference_only_real_mcp_tools() {
         const MCP_TOOLS: &[&str] = &[
-            "bn_add",
-            "bn_cat",
             "bn_cmd",
-            "bn_context",
-            "bn_done",
-            "bn_drop",
-            "bn_goal",
-            "bn_handoff_read",
-            "bn_handoff_write",
             "bn_links_add",
             "bn_links_search",
-            "bn_pr",
             "bn_ref",
             "bn_ref_append",
-            "bn_reopen",
-            "bn_reword",
-            "bn_status",
-            "bn_sync",
         ];
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dirs = [root.join("config/prompts"), root.join("config/agents")];

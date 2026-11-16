@@ -1,4 +1,4 @@
-//! The MCP server: current-worktree branch-note tools plus the workflow prompts from every skill
+//! The MCP server: commands, references and durable links, plus workflow prompts from every skill
 //! tier. Deliberately narrower than the CLI: cross-branch, whole-person, and explicit repo/branch
 //! targeting stay in `bn` so an MCP-connected agent cannot discover or act on unrelated sessions.
 //!
@@ -9,13 +9,9 @@
 
 use std::path::PathBuf;
 
-use bn_core::commands::{self, CmdError};
 use bn_core::links;
-use bn_core::payload;
 use bn_core::resolver::{self, Config, Resolved};
-use bn_core::rollups;
 use bn_core::util::today;
-use bn_core::{render, store};
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -41,44 +37,8 @@ pub struct BnServer {
     /// loaded from. Re-scanned on each prompt list/get so newly added skill files appear without
     /// restarting the server.
     skill_dirs: Vec<PathBuf>,
-    /// Serializes note mutations. The engine is stateless (the CLI runs one command per
-    /// process); this long-lived server can receive parallel tool calls, and each
-    /// add/done is a read-modify-write on the note file, so they must not interleave.
+    /// Serializes reference and link read-modify-write operations within this server.
     write_lock: std::sync::Mutex<()>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct AddArgs {
-    /// Section: todo | blocker | decision | research | collab | ask | done-when.
-    section: String,
-    /// The item text.
-    text: String,
-    /// Idempotent add: skip if an existing item in the section contains this key.
-    #[serde(default)]
-    if_absent: Option<String>,
-    /// Time estimate for calibration: `90m`, `2h`, `1h30m`.
-    #[serde(default)]
-    est: Option<String>,
-    /// Quarter-goal key this item counts toward (a `bn quarter` goal).
-    #[serde(default)]
-    q: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct ItemArgs {
-    /// Item id (`t3`, `b1`, `w2`, …) or a case-insensitive substring of its text.
-    query: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct RewordArgs {
-    /// Item id (`t3`, `b1`, `w2`, …) or a case-insensitive substring of its text.
-    query: String,
-    /// The replacement text.
-    text: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -93,30 +53,6 @@ struct LinksSearchArgs {
     /// Most links to return (default 20).
     #[serde(default)]
     limit: Option<usize>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct DoneArgs {
-    /// Todo id (e.g. `t3`) or a case-insensitive substring of its text.
-    query: String,
-    /// Partial progress percent (1-99): record how far along the item is instead of closing
-    /// it. Omit (or pass 100) to mark it done.
-    pct: Option<u8>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct PrArgs {
-    /// The pull-request URL (or number) to record on the branch note.
-    pr: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct GoalArgs {
-    /// The one-line Goal to set under the note's `## Goal` heading.
-    goal: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -141,10 +77,6 @@ struct LinksAddArgs {
     #[serde(default)]
     ttl: Option<String>,
 }
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct EmptyArgs {}
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -180,27 +112,6 @@ struct RefAppendArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct HandoffWriteArgs {
-    /// Narrative (layer 2): a few sentences on why the work looks the way it does.
-    #[serde(default)]
-    narrative: Option<String>,
-    /// Decisions deferred to the next session.
-    #[serde(default)]
-    deferred: Vec<String>,
-    /// Extra open questions beyond the note's `## To Ask`.
-    #[serde(default)]
-    questions: Vec<String>,
-    /// Explicit priority queue, in order. Omit to default to the note's open todos.
-    #[serde(default)]
-    priority_queue: Vec<String>,
-    /// Drop the previous packet's author layers. By default any layer left empty here is carried
-    /// forward from the last packet, so writing only a narrative keeps the deferred decisions.
-    #[serde(default)]
-    replace: bool,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct CmdArgs {
     /// The command to run. Omit to list every command in scope with its description and usage.
     #[serde(default)]
@@ -224,8 +135,7 @@ impl BnServer {
         }
     }
 
-    /// Every tool this server serves: the note tools here plus the watchdog, proof and context
-    /// tools, which live apart to keep this file under the size ratchet.
+    /// The retained command, reference and link tool surface.
     fn all_tools() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         Self::tool_router()
     }
@@ -246,83 +156,6 @@ impl BnServer {
                 None,
             )
         })
-    }
-
-    #[tool(
-        name = "bn_add",
-        description = "Add an item to this worktree's current branch note. Sections: todo, blocker, decision, research, collab, ask, done-when. MCP cannot target another repo or branch; use the bn CLI for cross-branch operations."
-    )]
-    async fn bn_add(
-        &self,
-        Parameters(a): Parameters<AddArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let est = match a.est.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-            Some(raw) if bn_core::focus::parse_duration(raw).is_none() => {
-                return Err(ErrorData::invalid_params(
-                    format!("est wants a duration like 90m, 2h, 1h30m, got '{raw}'"),
-                    None,
-                ))
-            }
-            e => e.map(str::to_string),
-        };
-        let out = {
-            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            commands::add_full(
-                &self.cfg,
-                &ctx,
-                &a.section,
-                &a.text,
-                a.if_absent.as_deref(),
-                est.as_deref(),
-                a.q.as_deref().map(str::trim).filter(|q| !q.is_empty()),
-                &today(),
-            )
-            .map_err(cmd_err)?
-        };
-        Ok(CallToolResult::structured(payload::add_data(&out)))
-    }
-
-    #[tool(
-        name = "bn_drop",
-        description = "Remove an item from this worktree's current branch note, by id (t3, b1, w2, …) or text substring. Records no completion: for an item added by mistake or a duplicate."
-    )]
-    async fn bn_drop(
-        &self,
-        Parameters(a): Parameters<ItemArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let out = commands::drop_item(&self.cfg, &ctx, &a.query).map_err(cmd_err)?;
-        Ok(CallToolResult::structured(payload::item_data(&out)))
-    }
-
-    #[tool(
-        name = "bn_reopen",
-        description = "Reopen a checked-off todo or done-when criterion on this worktree's current branch note, by id or substring of a done item."
-    )]
-    async fn bn_reopen(
-        &self,
-        Parameters(a): Parameters<ItemArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let out = commands::reopen_item(&self.cfg, &ctx, &a.query).map_err(cmd_err)?;
-        Ok(CallToolResult::structured(payload::item_data(&out)))
-    }
-
-    #[tool(
-        name = "bn_reword",
-        description = "Replace an item's text on this worktree's current branch note, keeping its id, dates and done state."
-    )]
-    async fn bn_reword(
-        &self,
-        Parameters(a): Parameters<RewordArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let out = commands::reword_item(&self.cfg, &ctx, &a.query, &a.text).map_err(cmd_err)?;
-        Ok(CallToolResult::structured(payload::item_data(&out)))
     }
 
     #[tool(
@@ -410,190 +243,6 @@ impl BnServer {
             "repo": out.repo,
             "expires": out.expires,
         })))
-    }
-
-    #[tool(
-        name = "bn_done",
-        description = "Mark a todo done on this worktree's current branch note by id or text substring. Pass pct (1-99) to record partial progress instead of closing."
-    )]
-    async fn bn_done(
-        &self,
-        Parameters(a): Parameters<DoneArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let check = match a.pct {
-            Some(p) if p < 100 => bn_core::proof::DoneCheck::Clear,
-            _ => bn_core::proof::check_done(&self.cfg, &ctx, &a.query),
-        };
-        if let bn_core::proof::DoneCheck::Refuse(why) = &check {
-            return Err(ErrorData::invalid_params(
-                format!("not ticked: {why}"),
-                None,
-            ));
-        }
-        let out = {
-            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            commands::done(&self.cfg, &ctx, &a.query, &today(), a.pct).map_err(cmd_err)?
-        };
-        let mut data = payload::done_data(&out);
-        if let bn_core::proof::DoneCheck::Warn(why) = check {
-            data["unproven"] = serde_json::Value::String(why);
-        }
-        Ok(CallToolResult::structured(data))
-    }
-
-    #[tool(
-        name = "bn_pr",
-        description = "Record the pull-request URL (or number) on this worktree's current branch note."
-    )]
-    async fn bn_pr(&self, Parameters(a): Parameters<PrArgs>) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let out = {
-            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            commands::set_pr(&self.cfg, &ctx, &a.pr, &today()).map_err(cmd_err)?
-        };
-        Ok(CallToolResult::structured(payload::pr_data(&out)))
-    }
-
-    #[tool(
-        name = "bn_goal",
-        description = "Set the one-line Goal on this worktree's current branch note -- the first thing to record in a fresh worktree."
-    )]
-    async fn bn_goal(
-        &self,
-        Parameters(a): Parameters<GoalArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let out = {
-            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            commands::set_goal(&self.cfg, &ctx, &a.goal, &today()).map_err(cmd_err)?
-        };
-        Ok(CallToolResult::structured(payload::goal_data(&out)))
-    }
-
-    #[tool(
-        name = "bn_cat",
-        description = "Render this worktree's current branch note action view (open todos, blockers, decisions, ...)."
-    )]
-    async fn bn_cat(
-        &self,
-        Parameters(_a): Parameters<EmptyArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let note_md = self.cfg.note_file(&ctx);
-        if !note_md.exists() {
-            let rendered = format!("{}/{}: no note", ctx.repo, ctx.branch);
-            return Ok(CallToolResult::structured(
-                json!({ "rendered": rendered, "front": null, "body": "" }),
-            ));
-        }
-        let note =
-            store::read(&note_md).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let saved = links::for_note(
-            &self.cfg,
-            &ctx.repo,
-            &ctx.branch,
-            &today(),
-            links::NOTE_LINKS,
-        );
-        let rendered = format!("{}{}", render::cat(&note), render::links_footer(&saved));
-        Ok(CallToolResult::structured(
-            json!({ "rendered": rendered, "front": note.front, "body": note.body }),
-        ))
-    }
-
-    #[tool(
-        name = "bn_context",
-        description = "Compact session-start context for this worktree's current branch in one call: goal, open todo/blocker counts, top open todos, blockers, PR/work item, handoff availability, and next-step hints. Call this first in a fresh session; use bn_cat for the full note and bn_handoff_read for the full orientation."
-    )]
-    async fn bn_context(
-        &self,
-        Parameters(_a): Parameters<EmptyArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let note = store::read(&self.cfg.note_file(&ctx)).ok();
-        let handoff_available = bn_core::handoff::read(&self.cfg, &ctx).is_some();
-        let data = payload::context_data(note.as_ref(), &ctx, handoff_available);
-        Ok(CallToolResult::structured(data))
-    }
-
-    #[tool(
-        name = "bn_status",
-        description = "Status for this worktree's current branch: open-todo and blocker counts, work item, PR."
-    )]
-    async fn bn_status(
-        &self,
-        Parameters(_a): Parameters<EmptyArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let status = rollups::status(&self.cfg, &ctx);
-        Ok(CallToolResult::structured(payload::status_data(
-            &status, &ctx,
-        )))
-    }
-
-    #[tool(
-        name = "bn_sync",
-        description = "Reconcile this worktree's current branch note against git/PR ground truth and return proposals (read-only, never writes). MCP cannot target another repo or branch; use the bn CLI for cross-branch sync."
-    )]
-    async fn bn_sync(
-        &self,
-        Parameters(_a): Parameters<EmptyArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let note = store::read(&self.cfg.note_file(&ctx))
-            .map_err(|_| ErrorData::invalid_params("No note for this branch", None))?;
-        let proposals = bn_core::sync::reconcile(
-            &note,
-            &ctx.repo,
-            &ctx.branch,
-            &bn_core::runner::RealRunner,
-            &bn_core::clock::RealClock,
-        );
-        Ok(CallToolResult::structured(payload::sync_data(&proposals)))
-    }
-
-    #[tool(
-        name = "bn_handoff_write",
-        description = "Write a structured session resume packet beside this worktree's current branch note. It is scoped to this branch note and does not mine other agent sessions."
-    )]
-    async fn bn_handoff_write(
-        &self,
-        Parameters(a): Parameters<HandoffWriteArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let input = bn_core::handoff::HandoffInput {
-            narrative: a.narrative.filter(|s| !s.trim().is_empty()),
-            deferred: a.deferred,
-            questions: a.questions,
-            priority_queue: a.priority_queue,
-            replace: a.replace,
-        };
-        let handoff = {
-            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            bn_core::handoff::write(&self.cfg, &ctx, &today(), &input)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
-        };
-        Ok(CallToolResult::structured(payload::handoff_data(&handoff)))
-    }
-
-    #[tool(
-        name = "bn_handoff_read",
-        description = "Read this worktree's current-branch session orientation. Falls back to composing one live from this branch note when none has been written."
-    )]
-    async fn bn_handoff_read(
-        &self,
-        Parameters(_a): Parameters<EmptyArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve()?;
-        let handoff = bn_core::handoff::read(&self.cfg, &ctx).or_else(|| {
-            store::read(&self.cfg.note_file(&ctx))
-                .ok()
-                .map(|note| bn_core::handoff::compose(&note, &today(), &Default::default()))
-        });
-        let handoff =
-            handoff.ok_or_else(|| ErrorData::invalid_params("No note for this branch", None))?;
-        Ok(CallToolResult::structured(payload::handoff_data(&handoff)))
     }
 
     #[tool(
@@ -729,7 +378,7 @@ impl BnServer {
 
     #[tool(
         name = "bn_ref_append",
-        description = "Record ONE durable fact in this repo's reference notes, as a bullet under a section (facts by default, or gotchas). Use it the moment you learn something that will still be true next month and would save the next session time -- a root cause, a build gotcha, where a subsystem actually lives. Creates the note if it doesn't exist. Include where the fact came from and today's date in the text. Returns appended:false when that exact fact is already recorded. Branch-specific state belongs in bn_add, not here."
+        description = "Record ONE durable fact in this repo's reference notes, as a bullet under a section (facts by default, or gotchas). Use it the moment you learn something that will still be true next month and would save the next session time -- a root cause, a build gotcha, where a subsystem actually lives. Creates the note if it doesn't exist. Include where the fact came from and today's date in the text. Returns appended:false when that exact fact is already recorded. Task-specific context belongs in workspan task doc, not here."
     )]
     async fn bn_ref_append(
         &self,
@@ -767,40 +416,12 @@ impl ServerHandler for BnServer {
         )
         .with_server_info(Implementation::new("bn-mcp", env!("CARGO_PKG_VERSION")))
         .with_instructions(
-            "Branch-notes MCP server, scoped to a single (repo, branch). The per-worktree stdio \
-             launcher (`bn mcp serve`) derives its scope from the client's current working \
-             directory. A call that resolves to no branch fails closed — with one deliberate \
-             exception, the link tools bn_links_add and bn_links_search, described below. Start a session with \
-             bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
-             hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_drop, \
-             bn_reopen, bn_reword, bn_pr, bn_cat, bn_status, bn_sync, bn_handoff_read, and \
-             bn_handoff_write. The link tools are \
-             person-scoped and may succeed without a branch. Keep that store deliberately small: \
-             use bn_links_search to search the proposed category and purpose first, then call \
-             bn_links_add only for an important, repeatedly useful link that fills a real gap. \
-             Never capture routine PRs, work items, review comments or every URL in a session. \
-             Two tools are repo-scoped rather than branch-scoped, because the knowledge \
-             outlives the branch: bn_ref reads this repo's reference notes (call it with no \
-             name for the cheap index before assuming anything about how the repo builds or \
-             behaves) and bn_ref_append records one durable fact back into them. \
-             Keeping those notes current is part of the work, not a chore at the end: the \
-             moment you learn something about this repo that will still be true next month -- \
-             a root cause, a build gotcha, where a subsystem actually lives -- append it with \
-             its source and today's date, and CORRECT a note this session proved wrong rather \
-             than appending a contradiction. A reference note nobody updates decays into \
-             folklore; one nobody reads gets re-derived every session. \
-             bn_cmd lists and runs the user's own commands: shell scripts wrapping something \
-             they do over and over (opening a tmux window, say). Check it before scripting \
-             the same steps by hand. \
-             The MCP surface \
-             cannot target another repo/branch and does not expose cross-branch rollups, search, \
-             daily goals, reviews, metrics, attention queues, cron status, or agent fleet/session \
-             mining; use the `bn` CLI for those explicit whole-person workflows. Every effective \
-             skill is served as a prompt (start-session, stow, axi, plan, debug, \
-             execute, investigate, triage and the rest); list them to see what this worktree \
-             offers. A prompt only supplies a workflow's instructions — carrying one out still \
-             goes through the scoped tools above, so some skills (PR review, orchestration) \
-             describe steps that need the `bn` CLI and cannot be completed over MCP alone."
+            "Workspan serves repo references, curated links, user commands and workflow prompts. \
+             Use workspan task doc/task do for task context and execution, workspan plan status/path \
+             for plan artifacts, and workspan pipeline for execution state. Entire owns session history. \
+             Read bn_ref without a name for the reference index; append only durable repo facts. \
+             Search bn_links_search before adding an important, repeatedly useful link with bn_links_add. \
+             bn_cmd lists and runs configured commands."
                 .to_string(),
         )
     }
@@ -837,14 +458,5 @@ impl ServerHandler for BnServer {
             GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, body)])
                 .with_description(skill.description.clone()),
         )
-    }
-}
-
-/// Map a bn-core command error onto an MCP error: caller mistakes -> invalid params,
-/// storage failures -> internal error. Uses the same stable codes as the CLI envelope.
-fn cmd_err(e: CmdError) -> ErrorData {
-    match e.code() {
-        "io" => ErrorData::internal_error(e.message(), None),
-        _ => ErrorData::invalid_params(e.message(), None),
     }
 }

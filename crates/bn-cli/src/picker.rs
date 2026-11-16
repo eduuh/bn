@@ -114,7 +114,7 @@ fn row_for(f: &Finding) -> Row {
                 path: String::new(),
             }
         }
-        Finding::Note(n) => Row {
+        Finding::Workspace(n) => Row {
             display: disp(
                 Accent,
                 format!("{}/{}", n.repo, n.branch),

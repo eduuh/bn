@@ -59,7 +59,7 @@ fn actual_keys(data: &Value, prefix: &str, out: &mut Vec<String>) {
 #[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
 fn the_envelope_carries_its_contract_version() -> anyhow::Result<()> {
     let sb = Sandbox::new()?;
-    let run = sb.bn(["goal", "--json"])?;
+    let run = sb.bn(["discover", "--json"])?;
     run.expect_success()?;
     let v: Value = serde_json::from_str(&run.stdout)?;
     assert_eq!(
@@ -69,7 +69,7 @@ fn the_envelope_carries_its_contract_version() -> anyhow::Result<()> {
         run.stdout
     );
     assert_eq!(v["ok"].as_bool(), Some(true));
-    assert_eq!(v["command"].as_str(), Some("goal"));
+    assert_eq!(v["command"].as_str(), Some("discover"));
     assert!(v.get("data").is_some() && v.get("error").is_some());
     Ok(())
 }
@@ -123,13 +123,12 @@ fn every_listed_command_has_a_resolvable_entry() -> anyhow::Result<()> {
 #[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
 fn documented_shapes_match_what_the_commands_emit() -> anyhow::Result<()> {
     let sb = Sandbox::new()?;
-    sb.bn(["goal", "a sandbox goal"])?.expect_success()?;
     let jobs = sb.path("home/.bn/config/jobs");
     std::fs::create_dir_all(&jobs)?;
     std::fs::write(jobs.join("test.sh"), "exit 0\n")?;
 
     for (tag, argv) in [
-        ("goal", vec!["goal"]),
+        ("discover", vec!["discover"]),
         ("repos", vec!["repos", "list"]),
         ("findings-sources", vec!["findings", "sources"]),
         ("verify", vec!["verify", "--dry-run"]),

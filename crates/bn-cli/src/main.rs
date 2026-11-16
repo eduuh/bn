@@ -1,12 +1,11 @@
 //! bn CLI — clap dispatch → bn-core → render (text or JSON envelope).
 
-pub(crate) use bn_core::commands::{self, AddOutcome, CmdError, DoneOutcome};
+pub(crate) use bn_core::commands::{self, CmdError};
 pub(crate) use bn_core::payload;
 pub(crate) use bn_core::render::Envelope;
 pub(crate) use bn_core::resolver::{self, Config, Resolved};
 pub(crate) use bn_core::rollups;
 pub(crate) use bn_core::style;
-pub(crate) use bn_core::{capture, migrate};
 pub(crate) use clap::{Parser, Subcommand};
 pub(crate) use clap_complete::Shell;
 
@@ -43,7 +42,6 @@ mod event_loop;
 mod gh;
 mod git;
 mod harness_dispatch;
-mod hooks;
 mod identity;
 mod jump;
 mod launchd;
@@ -96,7 +94,6 @@ pub(crate) use cmd::issue::*;
 pub(crate) use cmd::job_registry::*;
 pub(crate) use cmd::jobs::*;
 pub(crate) use cmd::learnings::*;
-pub(crate) use cmd::lifecycle::*;
 pub(crate) use cmd::links::*;
 pub(crate) use cmd::plan_review::*;
 pub(crate) use cmd::pr_link::*;
@@ -110,7 +107,6 @@ pub(crate) use cmd::routes::{route_command, route_default};
 pub(crate) use cmd::sessions::*;
 pub(crate) use cmd::setup::*;
 pub(crate) use cmd::skills::*;
-pub(crate) use cmd::sync::*;
 pub(crate) use cmd::task::*;
 pub(crate) use cmd::task_view::*;
 pub(crate) use cmd::tmux_reconcile::emit_tmux_reconcile;
@@ -138,9 +134,8 @@ fn log_provenance(cfg: &Config) -> bn_core::daily::LogProvenance {
     let cwd = std::env::current_dir().unwrap_or_default();
     match resolver::resolve_hint(cfg, &cwd) {
         Some(ctx) => {
-            let issue = bn_core::store::read(&cfg.note_file(&ctx))
-                .ok()
-                .and_then(|n| bn_core::learnings::note_issue(&n));
+            let issue = bn_core::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
+                .and_then(|task| task.meta("src").map(str::to_string));
             bn_core::daily::LogProvenance {
                 repo: Some(ctx.repo),
                 branch: Some(ctx.branch),
@@ -163,21 +158,9 @@ fn log_provenance(cfg: &Config) -> bn_core::daily::LogProvenance {
     disable_help_subcommand = true
 )]
 struct Cli {
-    /// Print the note directory path for the current branch.
-    #[arg(long = "path")]
-    path: bool,
-
     /// Print the resolved state directory (event log + caches).
     #[arg(long = "state-dir")]
     state_dir: bool,
-
-    /// Print the current branch note (action view).
-    #[arg(long = "cat")]
-    cat: bool,
-
-    /// Open the note in $EDITOR (creating it if missing).
-    #[arg(long = "edit")]
-    edit: bool,
 
     /// Emit a machine-readable JSON envelope instead of human text.
     #[arg(long = "json", global = true)]
@@ -325,43 +308,15 @@ fn main() {
         // production propagation to a child process, not test env
         std::env::set_var("BN_EDUUHEXPERIMENT", "1");
     }
-    if cli.path {
-        emit_note_dir(&cfg, cli.json);
-        return;
-    }
+
     if cli.state_dir {
         emit_state_dir(cli.json);
         return;
-    }
-    if cli.cat {
-        let ctx = resolve_or_fail_json(&cfg, cli.json, "cat");
-        emit_cat(&cfg, &ctx, cli.json);
-        return;
-    }
-    if cli.edit {
-        let ctx = resolve_or_fail_json(&cfg, cli.json, "edit");
-        let dir =
-            commands::ensure_note(&cfg, &ctx, &today()).unwrap_or_else(|e| fail(&e.message()));
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
-        let status = std::process::Command::new(editor)
-            .arg(dir.join("note.md"))
-            .status();
-        std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
     }
 
     match cli.command {
         Some(command) => route_command(&cfg, command, cli.json),
         None => route_default(&cfg, cli.json),
-    }
-}
-
-fn emit_note_dir(cfg: &Config, json: bool) {
-    let ctx = resolve_or_fail_json(cfg, json, "path");
-    let dir = cfg.note_dir(&ctx);
-    if json {
-        json_ok("path", path_json_data(&dir));
-    } else {
-        println!("{}", dir.display());
     }
 }
 
@@ -380,10 +335,8 @@ fn path_json_data(path: &std::path::Path) -> serde_json::Value {
 
 fn resolve_or_fail_json(cfg: &Config, json: bool, command: &str) -> Resolved {
     let cwd = std::env::current_dir().unwrap_or_default();
-    match resolver::resolve(cfg, &cwd) {
-        Ok(ctx) => ctx,
-        Err(_) => fail_json(json, command, "not_in_git_repo", "Not in a git repo"),
-    }
+    resolver::resolve(cfg, &cwd)
+        .unwrap_or_else(|_| fail_json(json, command, "not_in_git_repo", "Not in a git repo"))
 }
 
 /// Is this invocation a machine-driven render rather than something the user typed?
@@ -424,9 +377,7 @@ fn is_internal_callback(command: &Option<Command>) -> bool {
             action: Some(CronCmd::Running),
             ..
         })) | Some(Command::ShellUi(
-            CmdShellUi::TmuxGoal { .. }
-                | CmdShellUi::TmuxGit { .. }
-                | CmdShellUi::TmuxStatus { .. }
+            CmdShellUi::TmuxGit { .. } | CmdShellUi::TmuxStatus { .. }
         ))
     )
 }

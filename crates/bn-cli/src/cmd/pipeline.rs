@@ -23,7 +23,6 @@ use bn_core::pipeline::investigate::{next_after_investigation, InvestigationNext
 use bn_core::pipeline::stage::{self, BoardEntry, Stage};
 use bn_core::pipeline::status::{infer, PipelineView, PlanReview, TaskSignals};
 use bn_core::plan_review::{Review, ReviewStatus};
-use bn_core::rollups::BranchNote;
 
 mod status_render;
 mod board;
@@ -47,9 +46,9 @@ pub(crate) fn emit_pipeline(
     let live = agent_live::collect(cfg, 300, 900);
 
     let views = if all {
-        rollups::all_notes(cfg)
+        rollups::list(cfg)
             .iter()
-            .map(|note| pipeline_view(note, &reviews, &attn, &live))
+            .map(|entry| pipeline_view(cfg, &entry.repo, &entry.branch, &reviews, &attn, &live))
             .collect::<Vec<_>>()
     } else {
         let ctx = target_ctx_or_exit(
@@ -59,22 +58,7 @@ pub(crate) fn emit_pipeline(
             "bn pipeline",
             "bn pipeline: not in a worktree — pass --repo and --branch, or use --all",
         );
-        let path = cfg.note_file(&ctx);
-        let note = bn_core::store::read(&path).unwrap_or_else(|e| {
-            fail_json(
-                json,
-                "pipeline",
-                "note-read",
-                &format!("bn pipeline: cannot read {}: {e}", path.display()),
-            )
-        });
-        let branch_note = BranchNote {
-            repo: ctx.repo,
-            branch: ctx.branch,
-            path,
-            note,
-        };
-        vec![pipeline_view(&branch_note, &reviews, &attn, &live)]
+        vec![pipeline_view(cfg, &ctx.repo, &ctx.branch, &reviews, &attn, &live)]
     };
 
     if json {
@@ -97,14 +81,15 @@ pub(crate) fn emit_pipeline(
 }
 
 fn pipeline_view(
-    branch_note: &BranchNote,
+    cfg: &Config,
+    repo: &str,
+    branch: &str,
     reviews: &[Review],
     attn: &[bn_core::attention::AttnItem],
     live: &[agent_live::LiveView],
 ) -> PipelineView {
-    let note = &branch_note.note;
-    let repo = &branch_note.repo;
-    let branch = &branch_note.branch;
+    let task = bn_core::pipeline::gate::governing_task(cfg, repo, branch);
+    let doc = task.as_ref().and_then(|task| bn_core::task_doc::read(cfg, task));
     let normalized_branch = bn_core::plan_review::sanitize_branch(branch);
     let matching_attn = attn.iter().filter(|item| {
         item.repo
@@ -133,43 +118,27 @@ fn pipeline_view(
                 .eq_ignore_ascii_case(&critic_branch)
             && !matches!(row.state.as_str(), "done" | "failed")
     });
-    let next_todo = note
-        .front
-        .todos
-        .iter()
-        .find(|todo| todo.is_open_todo())
-        .map(|todo| format!("{} {}", todo.id, todo.text));
+    let open = task.as_ref().is_some_and(|task| task.is_open(&today()));
+    let next_todo = task.as_ref().filter(|_| open)
+        .map(|task| format!("{} {}", task.id().unwrap_or_default(), task.summary()));
 
     infer(&TaskSignals {
-        repo: repo.clone(),
-        branch: branch.clone(),
-        goal: bn_core::render::goal_text(&note.body),
-        note_closed: note.front.status == "closed",
-        has_done_when: !note.front.done_when.is_empty(),
-        has_todos: !note.front.todos.is_empty(),
-        open_todos: note
-            .front
-            .todos
-            .iter()
-            .filter(|todo| todo.is_open_todo())
-            .count(),
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+        goal: task.as_ref().map(|task| task.summary()),
+        note_closed: task.as_ref().is_some_and(|task| task.done),
+        has_done_when: doc.as_ref().is_some_and(|doc| doc.has_done_when()),
+        has_todos: task.is_some(),
+        open_todos: usize::from(open),
         next_todo,
-        blocker: note
-            .front
-            .blockers
-            .first()
-            .map(|blocker| blocker.text.clone()),
-        pr_url: note.front.pr.as_ref().map(|pr| pr.display()),
-        verify_passed: latest_verify_passed(&note.body),
+        blocker: matching_attn.clone().next().map(|item| item.title.clone()),
+        pr_url: task.as_ref().and_then(|task| task.meta("pr").map(str::to_string)),
+        verify_passed: doc.as_ref().is_some_and(|doc| latest_verify_passed(&doc.text)),
         plan_review: latest_plan_review(reviews, repo, branch),
         critic_active,
         critic_failed,
-        critic_passed: note.front.decisions.iter().any(|decision| {
-            decision
-                .text
-                .to_ascii_lowercase()
-                .starts_with("critique: pass")
-        }),
+        critic_passed: doc.as_ref().is_some_and(|doc| doc.text.lines().any(|line|
+            line.trim_start_matches("- ").to_ascii_lowercase().starts_with("critique: pass"))),
         agent_state,
     })
 }
@@ -293,7 +262,7 @@ pub(crate) fn emit_pipeline_advance(
 
 /// Record the transition and report it (JSON envelope or a one-line human message).
 fn transition(cfg: &Config, ctx: &Resolved, stage: Stage, as_json: bool) {
-    let decision = match stage::transition(cfg, &cfg.note_file(ctx), stage) {
+    let decision = match stage::transition(cfg, ctx, stage) {
         Ok(decision) => decision,
         Err(e) => fail(&format!("bn pipeline: failed to transition stage: {e}")),
     };
@@ -337,7 +306,8 @@ fn transition(cfg: &Config, ctx: &Resolved, stage: Stage, as_json: bool) {
 fn record_deferred(cfg: &Config, ctx: &Resolved, deferred: &[String]) {
     for question in deferred {
         let text = format!("deferred unknown (fan-out capped at {MAX_FANOUT}): {question}");
-        let _ = commands::add(cfg, ctx, "research", &text, Some(&text), &today());
+        bn_core::task_doc::append_context(cfg, ctx, "Investigation", &text)
+            .unwrap_or_else(|error| fail(&format!("cannot record deferred question: {error}")));
     }
 }
 
@@ -358,14 +328,8 @@ fn raise_investigation_attention(cfg: &Config, ctx: &Resolved, reason: &str) {
         },
         &today(),
     );
-    let _ = commands::add(
-        cfg,
-        ctx,
-        "blocker",
-        &format!("investigation needs human input: {reason}"),
-        Some("investigation needs human input:"),
-        &today(),
-    );
+    bn_core::task_doc::append_context(cfg, ctx, "Open questions", reason)
+        .unwrap_or_else(|error| fail(&format!("cannot record investigation blocker: {error}")));
 }
 
 fn enter_plan(
@@ -377,7 +341,7 @@ fn enter_plan(
     as_json: bool,
 ) {
     // Entering `plan` is not a gated transition, so this only fails on real I/O trouble.
-    if let Err(e) = stage::transition(cfg, &cfg.note_file(ctx), Stage::Plan) {
+    if let Err(e) = stage::transition(cfg, ctx, Stage::Plan) {
         fail(&format!(
             "bn pipeline investigate: failed to advance to plan: {e}"
         ));
@@ -427,19 +391,7 @@ pub(crate) fn emit_pipeline_investigate_finish(
     as_json: bool,
 ) {
     let ctx = resolve_target(current_ctx, repo, branch);
-    let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap_or_else(|e| {
-        fail(&format!(
-            "bn pipeline investigate finish: cannot read note for {}/{}: {e}",
-            ctx.repo, ctx.branch
-        ))
-    });
-    let goal = bn_core::render::goal_text(&note.body).unwrap_or_default();
-    let findings = note
-        .front
-        .research
-        .iter()
-        .map(|item| item.text.clone())
-        .collect::<Vec<_>>();
+    let (goal, findings) = investigation_context(cfg, &ctx);
 
     // The cap is the pipeline's, not the investigating agent's: it lists what it wants looked at,
     // and this decides how many of those are worth a worktree each.
@@ -473,7 +425,7 @@ pub(crate) fn emit_pipeline_investigate_finish(
             unknowns,
             deferred,
         } => {
-            let existing = pending_fanout_tokens(&note);
+            let existing = pending_fanout_tokens(&ctx);
             if !existing.is_empty() {
                 if as_json {
                     println!(
@@ -504,15 +456,8 @@ pub(crate) fn emit_pipeline_investigate_finish(
             let mut tokens = Vec::new();
             for (index, question) in unknowns.iter().enumerate() {
                 let token = format!("{run}-{}", index + 1);
-                let marker = format!("investigate-sub:{token}:pending — {question}");
-                let _ = commands::add(
-                    cfg,
-                    &ctx,
-                    "collab",
-                    &marker,
-                    Some(&format!("investigate-sub:{token}:")),
-                    &today(),
-                );
+                bn_core::pipeline::execution::record_fanout(&ctx.repo, &ctx.branch, &token, "pending")
+                    .unwrap_or_else(|error| fail(&format!("cannot record fanout: {error}")));
                 if !no_tmux && launch_sub_investigator(cfg, &ctx, &token, &goal, question, as_json)
                 {
                     launched += 1;
@@ -546,35 +491,24 @@ pub(crate) fn emit_pipeline_investigate_finish(
     }
 }
 
-fn pending_fanout_tokens(note: &bn_core::model::Note) -> Vec<String> {
-    note.front
-        .collab
-        .iter()
-        .filter_map(|item| {
-            item.text
-                .strip_prefix("investigate-sub:")
-                .and_then(|rest| rest.split_once(":pending"))
-                .map(|(token, _)| token.to_string())
-        })
-        .filter(|token| {
-            !note.front.collab.iter().any(|item| {
-                item.text == format!("investigate-sub:{token}:done")
-                    || item.text == format!("investigate-sub:{token}:blocked")
-            })
-        })
+fn pending_fanout_tokens(ctx: &Resolved) -> Vec<String> {
+    bn_core::pipeline::execution::fanouts(&ctx.repo, &ctx.branch)
+        .into_iter().filter(|(_, status)| status == "pending").map(|(token, _)| token)
         .collect()
 }
 
-fn all_fanouts_complete(note: &bn_core::model::Note) -> bool {
-    let had_fanout =
-        note.front.collab.iter().any(|item| {
-            item.text.starts_with("investigate-sub:") && item.text.contains(":pending")
-        });
-    let blocked =
-        note.front.collab.iter().any(|item| {
-            item.text.starts_with("investigate-sub:") && item.text.ends_with(":blocked")
-        });
-    had_fanout && !blocked && pending_fanout_tokens(note).is_empty()
+fn all_fanouts_complete(ctx: &Resolved) -> bool {
+    let fanouts = bn_core::pipeline::execution::fanouts(&ctx.repo, &ctx.branch);
+    !fanouts.is_empty() && fanouts.values().all(|status| status == "done")
+}
+
+fn investigation_context(cfg: &Config, ctx: &Resolved) -> (String, Vec<String>) {
+    let task = bn_core::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
+        .unwrap_or_else(|| fail("pipeline investigation requires a governing task"));
+    let findings = bn_core::task_doc::read(cfg, &task)
+        .and_then(|doc| doc.section("Investigation"))
+        .map(|text| vec![text]).unwrap_or_default();
+    (task.summary(), findings)
 }
 
 /// Merge one focused sub-investigator's findings and advance once the whole fan-out completes.
@@ -604,14 +538,8 @@ pub(crate) fn emit_pipeline_investigate_contribute(
         if finding.trim().is_empty() {
             continue;
         }
-        let _ = commands::add(
-            cfg,
-            &ctx,
-            "research",
-            finding,
-            Some(finding.trim()),
-            &today(),
-        );
+        bn_core::task_doc::append_context(cfg, &ctx, "Investigation", finding)
+            .unwrap_or_else(|error| fail(&format!("cannot record finding: {error}")));
     }
     let status = if let Some(reason) = blocked.map(str::trim).filter(|reason| !reason.is_empty()) {
         raise_investigation_attention(cfg, &ctx, reason);
@@ -619,29 +547,11 @@ pub(crate) fn emit_pipeline_investigate_contribute(
     } else {
         "done"
     };
-    let _ = commands::add(
-        cfg,
-        &ctx,
-        "collab",
-        &format!("investigate-sub:{token}:{status}"),
-        Some(&format!("investigate-sub:{token}:{status}")),
-        &today(),
-    );
-
-    let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap_or_else(|e| {
-        fail(&format!(
-            "bn pipeline investigate contribute: cannot read note for {repo}/{branch}: {e}"
-        ))
-    });
-    let completed = status == "done" && all_fanouts_complete(&note);
+    bn_core::pipeline::execution::record_fanout(&ctx.repo, &ctx.branch, token, status)
+        .unwrap_or_else(|error| fail(&format!("cannot record fanout: {error}")));
+    let completed = status == "done" && all_fanouts_complete(&ctx);
     if completed {
-        let goal = bn_core::render::goal_text(&note.body).unwrap_or_default();
-        let findings = note
-            .front
-            .research
-            .iter()
-            .map(|item| item.text.clone())
-            .collect::<Vec<_>>();
+        let (goal, findings) = investigation_context(cfg, &ctx);
         enter_plan(cfg, &ctx, &goal, &findings, false, as_json);
     } else if as_json {
         println!(

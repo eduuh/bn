@@ -83,7 +83,7 @@ From the branch's worktree here. nvim runs on that machine, in a tmux window the
 bn plan view --host <machine>
 ```
 
-This copies the newest `*.html` from that branch's note folder on the machine and opens it in the browser here (the Windows browser from WSL). No port forwarding is needed. For a live page instead (a Lavish session, a dev server on that machine), add `--port <n>`: it forwards the port, opens `http://localhost:<n>`, and forwards again after a drop until Ctrl-C. Without `--host` it opens the newest plan HTML of this branch here. A remote agent should save plan HTML under `$(bn --path)/plans/`, so this finds it.
+This copies the newest plan HTML artifact from that branch on the machine and opens it in the browser here (the Windows browser from WSL). No port forwarding is needed. For a live page instead (a Lavish session, a dev server on that machine), add `--port <n>`: it forwards the port, opens `http://localhost:<n>`, and forwards again after a drop until Ctrl-C. Without `--host` it opens the newest plan HTML here. A remote agent should use `workspan plan path` to locate the active plan and save HTML beside it rather than guessing a storage path.
 
 ## Talk to agents on other machines
 

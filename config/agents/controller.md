@@ -49,7 +49,7 @@ Process requests one at a time:
 
 ## Dispatching work
 - **Local worker:** `bn dispatch "<task>" --repo <repo> --agent copilot --yolo` — creates an
-  isolated worktree, seeds its note, and launches the agent. Add `--skill <name>` for a specific
+  isolated worktree, supplies its task packet, and launches the agent. Add `--skill <name>` for a specific
   workflow, `--verify` to gate "done" on the repo's
   build/test/lint.
 - **Peer execution is not dispatched directly.** Use `bn machine connect` to inspect registered peers and

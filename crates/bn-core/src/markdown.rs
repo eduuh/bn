@@ -98,3 +98,86 @@ pub fn scan(body: &str) -> impl Iterator<Item = (&str, bool)> {
         (line, code)
     })
 }
+
+/// Split `---\n<yaml>\n---\n<body>` into (frontmatter-block-without-fences, body-after-fence).
+/// Returns `None` if there is no leading `---` fence pair. The frontmatter block keeps the
+/// trailing newline of its last field (serde-safe); the body has its leading blank lines
+/// trimmed. This is the single source of truth for fence parsing — callers across the crate
+/// (notes, daily, skills, migration) route through it rather than hand-slicing `---`.
+///
+/// Both LF (`\n`) and CRLF (`\r\n`) line endings are accepted: a note.md saved on Windows opens
+/// with `---\r\n`, so matching only the LF fence would reject it as missing frontmatter and drop
+/// the entire structured block. The returned slices keep whatever endings the source used
+/// (serde_yaml parses CRLF fine); only the body's leading blank lines are trimmed.
+pub(crate) fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
+    let rest = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))?;
+    // The closing fence must stand alone on its line: "\n---" followed by a newline (LF or CRLF)
+    // or EOF. A naive `find("\n---")` would also match inside a multi-line YAML value or a "----"
+    // rule, truncating the frontmatter and corrupting the parse.
+    let mut from = 0;
+    let end = loop {
+        let idx = rest[from..].find("\n---")? + from;
+        let after = &rest[idx + 4..];
+        if after.is_empty() || after.starts_with('\n') || after.starts_with("\r\n") {
+            break idx;
+        }
+        from = idx + 1;
+    };
+    // Keep the last field's trailing newline (serde-safe); then skip the "\n---" fence and drop
+    // leading blank lines. CRLF-safe: trims both \r and \n.
+    let front = &rest[..end + 1];
+    let body = rest[end + 4..].trim_start_matches(['\n', '\r']);
+    Some((front, body))
+}
+
+/// Split the frontmatter fence off `text` and deserialize the YAML block into `T` — the common
+/// "read a fenced doc's frontmatter" shape shared by the daily layer and its queues. Errors
+/// uniformly: a missing fence or a YAML parse failure both surface as [`crate::fs::StoreError::Parse`].
+pub(crate) fn parse_frontmatter<T: serde::de::DeserializeOwned>(
+    text: &str,
+) -> Result<T, crate::fs::StoreError> {
+    let (block, _) = split_frontmatter(text)
+        .ok_or_else(|| crate::fs::StoreError::Parse("missing frontmatter fence".into()))?;
+    serde_yaml::from_str(block).map_err(|e| crate::fs::StoreError::Parse(e.to_string()))
+}
+
+/// Collect bullet lines under a heading until the next `## ` / `---` / EOF.
+/// Returns (done, text) per bullet; `done` is meaningful only for todo checkboxes.
+/// Skips the template placeholder lines (`-`, `- [ ]`, `- [ ] test`).
+pub fn section_bullets(body: &str, heading: &str) -> Vec<(bool, String)> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for (line, code) in crate::markdown::scan(body) {
+        if !in_section {
+            if !code && line == heading {
+                in_section = true;
+            }
+            continue;
+        }
+        if !code && (line.starts_with("## ") || line == "---") {
+            break;
+        }
+        // Bullets quoted inside a fence are sample text, not items of this section.
+        if code {
+            continue;
+        }
+        let trimmed = line.trim_end();
+        if trimmed == "-" || trimmed == "- [ ]" || trimmed == "- [ ] test" {
+            continue; // placeholder seed
+        }
+        if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
+            out.push((false, rest.to_string()));
+        } else if let Some(rest) = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "))
+        {
+            // Markdown task lists accept both `x` and `X` as the checked marker.
+            out.push((true, rest.to_string()));
+        } else if let Some(rest) = trimmed.strip_prefix("- ") {
+            out.push((false, rest.to_string()));
+        }
+    }
+    out
+}

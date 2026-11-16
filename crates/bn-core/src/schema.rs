@@ -54,36 +54,19 @@ pub const COMMANDS: &[CommandSchema] = &[
         ],
     },
     CommandSchema {
-        tag: "goal",
-        invocation: "bn goal --json",
-        summary: "the current branch note's goal",
-        fields: &["goal: string — the goal text, empty when unset"],
-    },
-    CommandSchema {
         tag: "discover",
         invocation: "bn discover --json [task...]",
         summary: "read-only branch context and ranked workflow suggestions for a task",
         fields: &[
             "task: string — the trimmed task text, empty when omitted",
-            "context: object|null — current branch-note orientation, null outside a repo or detached HEAD",
+            "context: object|null — current task/execution orientation, null outside a repo or detached HEAD",
             "context.repo: string — the repo key when context exists",
             "context.branch: string — the branch name when context exists",
             "context.goal: string|null — compact goal text, null when unset",
-            "context.note_exists: bool — whether this branch already has a note",
-            "context.counts: object — open todo/blocker counts",
-            "context.counts.open_todos: number — unchecked todo count",
-            "context.counts.blockers: number — open blocker count",
-            "context.todos: array — up to three open todos",
-            "context.todos[].id: string — todo id",
-            "context.todos[].text: string — compact todo text",
-            "context.todos_truncated: bool — true when more todos exist",
-            "context.blockers: array — up to three blockers",
-            "context.blockers[].id: string — blocker id",
-            "context.blockers[].text: string — compact blocker text",
-            "context.blockers_truncated: bool — true when more blockers exist",
-            "context.handoff_available: bool — whether a handoff note exists",
-            "context.pr: string|null — stored PR URL when known",
-            "context.work_item: string|null — linked work item when known",
+            "context.task_id: string|null — governing task id",
+            "context.doc: string|null — task-owned context document path",
+            "context.stage: string|null — latest recorded pipeline stage",
+            "context.plan: object — current plan artifacts and execution status",
             "workflows: array — ranked matching workflows, up to three",
             "workflows[].name: string — workflow or skill name",
             "workflows[].description: string — compact description",
@@ -101,23 +84,9 @@ pub const COMMANDS: &[CommandSchema] = &[
         ],
     },
     CommandSchema {
-        tag: "list",
-        invocation: "bn list --json",
-        summary: "every active branch note, across every repo",
-        fields: &[
-            "branches: array — one row per note",
-            "branches[].repo: string — the repo key, lowercased",
-            "branches[].branch: string — the branch name",
-            "branches[].path: string — absolute path to note.md",
-            "branches[].status: string — active | closed",
-            "branches[].open_todos: number — unchecked todo count",
-            "branches[].blockers: number — open blocker count",
-        ],
-    },
-    CommandSchema {
         tag: "worktrees",
         invocation: "bn worktrees --json",
-        summary: "active notes joined to their on-disk worktree dirs",
+        summary: "task scopes joined to their on-disk worktree dirs",
         fields: &[
             "worktrees: array — `list`'s row shape plus:",
             "worktrees[].worktree: string|null — the checkout dir, null when it is gone",
@@ -253,7 +222,7 @@ mod tests {
 
     #[test]
     fn find_resolves_a_registered_tag_and_rejects_an_unknown_one() {
-        assert_eq!(find("goal").map(|c| c.tag), Some("goal"));
+        assert!(find("goal").is_none());
         assert_eq!(find("discover").map(|c| c.tag), Some("discover"));
         assert!(find("definitely-not-a-command").is_none());
     }

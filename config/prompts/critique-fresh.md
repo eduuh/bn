@@ -23,8 +23,8 @@ invent a callback, create a pipeline, or redispatch implementation. The numbered
 below applies only when its envelope was supplied.
 
 1. **Ground on the change only.** The launcher appends a plan-free runtime packet containing the
-   done-when criteria, PR, and exact diff. Use that packet as the review contract. `bn_cat` may be
-   used only for the critic lane's plan-free state. Read the diff cold and resist any assumption
+   done-when criteria, PR, and exact diff. Use that packet as the review contract.
+   Read the diff cold and resist any assumption
    about intent that the diff itself doesn't show. State in one line what the change claims to do.
 
 2. **Check it against the contract.** For each `done-when` criterion, decide whether the change
@@ -33,7 +33,7 @@ below applies only when its envelope was supplied.
 
 3. **Try to break it.** Run the repo gate — `bn verify` (build/test/lint). Then probe the seams
    the tests miss: edge cases, error paths, concurrency, the invariants the code touches. Prefer a
-   failing command or test over an opinion. Record what you *ruled out* (`bn_add research`), not
+   failing command or test over an opinion. Include what you *ruled out* in the review evidence, not
    just what you found — the ruled-out paths are half the value.
 
 4. **Judge, then deliver the verdict through the callback — nothing else.** Pass only if verify

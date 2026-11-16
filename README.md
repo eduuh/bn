@@ -61,13 +61,15 @@ See [the setup reference](config/reference/entire-setup.md).
 ## Compatibility
 
 Workspan was previously named `bn`. The installer provides `workspan` as the primary entry point
-while keeping `bn` and existing command behavior available. Set `WORKSPAN_INSTALL_WP=1` during
+while keeping `bn` as an executable compatibility alias. Set `WORKSPAN_INSTALL_WP=1` during
 installation to request an optional `wp` alias; an existing `wp` command is never replaced.
 
-This is an incremental identity migration, not a storage migration. Existing `BN_*` environment
+Existing `BN_*` environment
 variables, `~/.config/bn`, `.bn` project files, worktree paths, internal crate names, and release
-binary names remain compatible. Legacy note functionality is retained while its dependencies
-are phased out; it is not Workspan's product focus. Existing users do not need to move their data.
+binary names remain compatible. Branch-note commands and MCP tools are retired. Workspan tasks
+(file or Forge), task context, plans, and execution state do not require a branch note. Entire
+owns session history. Existing historical note files are preserved, not imported or deleted;
+existing users do not need to move their configuration or task data.
 
 Configuration: [docs/config.md](docs/config.md). Releases: [docs/releases.md](docs/releases.md).
 The name overlaps an existing WorkSpan software brand; this project is independent of that company.
@@ -77,7 +79,7 @@ The name overlaps an existing WorkSpan software brand; this project is independe
 | Path | What |
 |---|---|
 | `crates/bn-cli` | CLI and compatibility binary |
-| `crates/bn-core` | Shared execution, workspace, integration, and legacy storage logic |
+| `crates/bn-core` | Shared execution, workspace, task, and integration logic |
 | `crates/bn-mcp` | Stdio MCP server |
 | `crates/bn-e2e` | Hermetic end-to-end tests |
 | `config/` | Shared skills, agents, jobs, tmux configuration and stow packages |

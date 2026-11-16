@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "bn": {
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "command": "bn",
+      "tools": [
+        "bn_cmd",
+        "bn_links_search",
+        "bn_links_add",
+        "bn_ref",
+        "bn_ref_append"
+      ],
+      "type": "local"
+    }
+  }
+}

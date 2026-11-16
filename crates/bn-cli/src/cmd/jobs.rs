@@ -91,14 +91,6 @@ pub(crate) fn job_watch(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     0
 }
 
-/// `recall-index` — keep the machine-local semantic-recall index warm (#249): (re)embed only the
-/// notes/investigation docs whose fingerprint changed since the last run, so it's cheap on a
-/// schedule. Fully offline and idempotent.
-pub(crate) fn job_recall_index(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    build_recall_index(cfg);
-    0
-}
-
 /// `managed-repos` — clone + refresh the repos listed in `[managed_repos]` under the bn-managed
 /// root (`~/.bn/repos`), using bn's own bare+worktree layout so `wt`/`tat` can pick them up. This
 /// is how dotfiles (and any always-checked-out repo) land on a new machine without a manual
@@ -494,10 +486,7 @@ pub(crate) fn job_wrap_digest(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let today = today();
     // Mirror emit_wrap: with no note in cwd, date un-noted commits at `today` so that section
     // stays empty rather than flagging every commit.
-    let note_since = target_ctx(cfg, None, None)
-        .and_then(|ctx| bn_core::store::read(&cfg.note_file(&ctx)).ok())
-        .map(|note| bn_core::reports::note_last_activity(&note))
-        .unwrap_or_else(|| today.clone());
+    let note_since = today.clone();
     let w = bn_core::reports::wrap(cfg, &today, &note_since, &bn_core::runner::RealRunner);
     let mut digest = if w.is_empty() {
         String::new()
@@ -950,7 +939,6 @@ pub(crate) fn attn_auto_max() -> usize {
     env_i64("BN_ATTN_AUTO_MAX", 1).max(1) as usize
 }
 
-/// The `commit-notes` job and its decision logic (split out under the file-size ratchet).
-/// Re-exported so every `crate::cmd::jobs::…` path that existed before the split still resolves.
-mod commit_notes;
-pub(crate) use commit_notes::*;
+/// Sync retained state without staging historical branch artifacts.
+mod sync_state;
+pub(crate) use sync_state::*;

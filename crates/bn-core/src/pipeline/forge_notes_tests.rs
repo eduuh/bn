@@ -7,19 +7,18 @@ use std::sync::atomic::Ordering;
 use super::gate::{self, GateDecision};
 use super::stage::{self, Stage};
 use crate::forge_app::client::BnTaskRow;
-use crate::resolver::RepoBranch;
+use crate::resolver::Resolved;
 use crate::test_support::forge::{row, ForgeEnv};
 
 fn forge(name: &str, rows: Vec<BnTaskRow>) -> ForgeEnv {
     ForgeEnv::new(name, rows).unwrap()
 }
 
-fn note_at(dir: &std::path::Path, repo: &str, branch: &str) -> std::path::PathBuf {
-    let path = dir.join("note").join("note.md");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let note = crate::model::Note::new(RepoBranch { repo, branch }, "2026-09-14", "testhost");
-    crate::store::save(&note, &path).unwrap();
-    path
+fn context(repo: &str, branch: &str) -> Resolved {
+    Resolved {
+        repo: repo.into(),
+        branch: branch.into(),
+    }
 }
 
 #[test]
@@ -33,9 +32,9 @@ fn a_stage_transition_comments_on_the_governing_forge_task() {
             &[("id", "t1"), ("repo", "bn"), ("branch", "feat/x")],
         )],
     );
-    let path = note_at(f.dir.path(), "bn", "feat/x");
+    let ctx = context("bn", "feat/x");
 
-    let decision = stage::transition(&f.cfg, &path, Stage::Plan).unwrap();
+    let decision = stage::transition(&f.cfg, &ctx, Stage::Plan).unwrap();
     assert_eq!(decision, GateDecision::Admitted);
     assert_eq!(
         f.fake.comments(),
@@ -55,13 +54,10 @@ fn a_forge_outage_never_fails_the_transition() {
         )],
     );
     f.fake.fail_comments.store(true, Ordering::Relaxed);
-    let path = note_at(f.dir.path(), "bn", "feat/x");
+    let ctx = context("bn", "feat/x");
 
-    stage::transition(&f.cfg, &path, Stage::Execute).expect("the stage still moves");
-    assert_eq!(
-        crate::store::read(&path).unwrap().front.stage,
-        Some(Stage::Execute)
-    );
+    stage::transition(&f.cfg, &ctx, Stage::Execute).expect("the stage still moves");
+    assert_eq!(stage::current("bn", "feat/x"), Some(Stage::Execute));
     assert!(f.fake.comments().is_empty());
 }
 
@@ -76,8 +72,8 @@ fn a_worktree_no_task_governs_leaves_no_comment() {
             &[("id", "t1"), ("repo", "bn"), ("branch", "feat/other")],
         )],
     );
-    let path = note_at(f.dir.path(), "bn", "feat/x");
-    stage::transition(&f.cfg, &path, Stage::Plan).unwrap();
+    let ctx = context("bn", "feat/x");
+    stage::transition(&f.cfg, &ctx, Stage::Plan).unwrap();
     assert!(f.fake.comments().is_empty());
 }
 

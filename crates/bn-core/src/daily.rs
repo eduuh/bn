@@ -11,10 +11,11 @@
 
 use crate::commands::CmdError;
 use crate::id::{next_id, next_id_from_ids};
-use crate::model::{GoalNote, Item};
+mod item;
+use crate::fs::StoreError;
 use crate::resolver::Config;
-use crate::store::StoreError;
 use crate::util;
+pub use item::{GoalNote, Item, NoteInput, NoteOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -140,26 +141,6 @@ pub struct DropOutcome {
     pub link: Option<String>,
 }
 
-/// A note to connect to a goal (#564): a linked branch note (`repo` + `branch`) and/or attached
-/// free-text / uploaded content (`text`), optionally titled. [`connect_note`] normalizes each
-/// field (trim + drop-if-empty) and rejects an input that carries neither a complete link nor text.
-#[derive(Debug, Clone, Default)]
-pub struct NoteInput {
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub text: Option<String>,
-    pub title: Option<String>,
-}
-
-/// Result of connecting or disconnecting a goal note: the goal it now hangs on (id + text) and the
-/// affected [`GoalNote`] (the freshly-connected one, or the just-removed one).
-#[derive(Debug)]
-pub struct NoteOutcome {
-    pub goal_id: String,
-    pub goal_text: String,
-    pub note: GoalNote,
-}
-
 /// A follow-up queued for a future day. Lives in the scheduled queue (not a day file, which
 /// would suppress that day's carry-over) until its `scheduled` date arrives, when
 /// `ensure_today` drains it into that day's goals.
@@ -229,7 +210,7 @@ fn to_text(daily: &Daily) -> Result<String, StoreError> {
 /// Read a day file, parsing the leading `---` frontmatter block into [`DailyFront`].
 pub fn read(path: &Path) -> Result<Daily, StoreError> {
     let text = std::fs::read_to_string(path)?;
-    let front: DailyFront = crate::store::parse_frontmatter(&text)?;
+    let front: DailyFront = crate::markdown::parse_frontmatter(&text)?;
     Ok(Daily { front })
 }
 
@@ -974,7 +955,7 @@ fn read_queue(cfg: &Config) -> Vec<ScheduledItem> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return vec![];
     };
-    crate::store::parse_frontmatter::<QueueFront>(&text)
+    crate::markdown::parse_frontmatter::<QueueFront>(&text)
         .map(|q| q.scheduled)
         .unwrap_or_default()
 }
@@ -1238,7 +1219,7 @@ pub fn read_ratings(cfg: &Config) -> Vec<DxiRating> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return vec![];
     };
-    crate::store::parse_frontmatter::<DxiFront>(&text)
+    crate::markdown::parse_frontmatter::<DxiFront>(&text)
         .map(|d| d.ratings)
         .unwrap_or_default()
 }

@@ -669,15 +669,8 @@ pub(crate) fn run_attn_start_attributed(
         repo: repo.to_string(),
         branch: branch.to_string(),
     };
-    if let Err(e) = commands::ensure_note(cfg, &ctx, &today()) {
-        eprintln!(
-            "bn attn start: failed to create branch note for {repo}/{branch}: {}",
-            e.message()
-        );
-        return None;
-    }
     let stage = pipeline_stage_for_task_type(item.task_type());
-    match bn_core::pipeline::stage::transition(cfg, &cfg.note_file(&ctx), stage) {
+    match bn_core::pipeline::stage::transition(cfg, &ctx, stage) {
         Err(e) => {
             eprintln!(
                 "bn attn start: failed to enter pipeline stage {stage} for {repo}/{branch}: {e}"
@@ -760,7 +753,7 @@ pub(crate) fn emit_attn_start(cfg: &Config, id: &str, agent: bool, as_json: bool
         match (&repo, &branch) {
             (Some(repo), Some(branch)) => fail(&format!(
                 "bn attn start: couldn't open a worktree for {repo}/{branch} \
-                 (bare repo or branch note missing locally?)"
+                 (bare repo or branch missing locally?)"
             )),
             _ => fail(
                 "bn attn start: item has no repo/branch; enhance or assign it before starting",
@@ -989,8 +982,7 @@ pub(crate) fn emit_attn_plan(cfg: &Config, id: &str, section: &str, as_json: boo
             fail("bn attn plan: not in a git repo — item carries no repo/branch to target")
         }
         Err(bn_core::attention::PlanError::Add(e)) => {
-            emit_err("attn plan", &e, as_json);
-            return;
+            fail_json(as_json, "attn plan", "task-write", &e.to_string());
         }
         Err(bn_core::attention::PlanError::Resolve(e)) => fail(&format!("bn attn plan: {e}")),
     };
@@ -1004,8 +996,8 @@ pub(crate) fn emit_attn_plan(cfg: &Config, id: &str, section: &str, as_json: boo
                 payload::attn_plan_data(
                     id,
                     payload::PlannedTodo {
-                        id: &todo.id,
-                        section: todo.section.label(),
+                        id: todo.id().unwrap_or_default(),
+                        section: "Task",
                         rb: ctx.rb(),
                     },
                 ),
@@ -1014,12 +1006,11 @@ pub(crate) fn emit_attn_plan(cfg: &Config, id: &str, section: &str, as_json: boo
         );
     } else {
         println!(
-            "Planned {id} → {} [{}] on {}/{}: {}",
-            todo.section.label(),
-            todo.id,
+            "Planned {id} → Task [{}] on {}/{}: {}",
+            todo.id().unwrap_or_default(),
             ctx.repo,
             ctx.branch,
-            todo.text
+            todo.summary()
         );
     }
 }

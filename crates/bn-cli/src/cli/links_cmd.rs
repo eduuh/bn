@@ -73,7 +73,7 @@ pub(crate) enum LinksCmd {
         #[arg(long)]
         when: Option<String>,
     },
-    /// Explicitly store the branch note's PR and work item after deciding they are durable links.
+    /// Explicitly store the governing task's PR and work item after deciding they are durable links.
     Capture {
         /// Broad category these links fill. Must be in `bn links tags`.
         #[arg(long)]

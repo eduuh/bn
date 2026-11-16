@@ -8,7 +8,7 @@
 //! Filtering here fixes every one of those readers at once, because they all come through
 //! [`task_goals`].
 
-use crate::model::Item;
+use crate::daily::Item;
 use crate::resolver::Config;
 
 /// One task rendered as a daily goal.

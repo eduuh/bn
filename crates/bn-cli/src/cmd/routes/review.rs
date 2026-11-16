@@ -75,58 +75,6 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                 }
             }
         }
-        CmdReview::Done { query, pct } => {
-            let ctx = resolve_or_exit(cfg);
-            let query = query.join(" ");
-            // A done-when criterion wants accepted evidence first (`[proof].done_requires`).
-            let check = if pct.is_some_and(|p| p < 100) {
-                bn_core::proof::DoneCheck::Clear
-            } else {
-                bn_core::proof::check_done(cfg, &ctx, &query)
-            };
-            if let bn_core::proof::DoneCheck::Refuse(why) = &check {
-                fail_json(json, "done", "unproven", &format!("not ticked: {why}"));
-            }
-            let res = commands::done(cfg, &ctx, &query, &today(), pct);
-            let ticked = res.is_ok();
-            emit_done(res, json);
-            if let (true, bn_core::proof::DoneCheck::Warn(why)) = (ticked, &check) {
-                eprintln!("⚠ ticked, but unproven: {why}");
-            }
-            sync_tmux(cfg, &ctx);
-        }
-        CmdReview::Ingest { branch, base } => {
-            let mut ctx = resolve_or_exit(cfg);
-            if let Some(b) = branch {
-                ctx.branch = b.replace('/', "-");
-            }
-            run_ingest(cfg, &ctx, &base, json);
-        }
-        CmdReview::Goal { text } => {
-            let ctx = resolve_or_exit(cfg);
-            if text.is_empty() {
-                // Read mode: extract the goal from the note body (the nvim plugin reads this).
-                let goal = bn_core::store::read(&cfg.note_file(&ctx))
-                    .ok()
-                    .and_then(|n| bn_core::render::goal_text(&n.body))
-                    .unwrap_or_default();
-                if json {
-                    let env = Envelope::success(
-                        "goal",
-                        payload::goal_data(&commands::GoalOutcome { goal }),
-                    );
-                    println!("{}", env.to_json());
-                } else if goal.is_empty() {
-                    println!("No goal set");
-                } else {
-                    println!("Goal: {goal}");
-                }
-            } else {
-                let res = commands::set_goal(cfg, &ctx, &text.join(" "), &today());
-                emit_goal(res, json);
-                sync_tmux(cfg, &ctx);
-            }
-        }
         CmdReview::Learned { text } => {
             if text.is_empty() {
                 fail("bn learned: text required — bn learned \"<what you learned>\"");
@@ -206,14 +154,6 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                 json,
             ),
         },
-        CmdReview::Note => {
-            let ctx = resolve_or_exit(cfg);
-            emit_note(commands::note_path(cfg, &ctx, &today()), json);
-        }
-        CmdReview::Cat => {
-            let ctx = resolve_or_exit(cfg);
-            emit_cat(cfg, &ctx, false);
-        }
         CmdReview::Review { action } => match action {
             None | Some(ReviewCmd::List) => emit_review_list(json),
             Some(ReviewCmd::Submit {

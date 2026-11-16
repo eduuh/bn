@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that every skill renders and every `bn ...` command it cites still exists.
+"""Check that every skill renders and every bn/workspan command it cites still exists.
 
 Skills (config/prompts/*.md, .bn/skills/*.md) are instructions an agent follows
 literally. When a subcommand or flag is renamed or removed, a skill that still
@@ -97,7 +97,7 @@ def code_snippets(text):
 # `bn` only where a shell command starts, so "# >>> bn codespace" markers and
 # "for b in bn bn-mcp" lists are not read as invocations.
 INVOCATION = re.compile(
-    r"(?:^\s*|[|;&(]\s*|\$\(\s*|[{!]\s+|\b(?:then|do|else|time|exec|sudo|env|xargs|watch)\s+)bn\s+(?=\S)"
+    r"(?:^\s*|[|;&(]\s*|\$\(\s*|[{!]\s+|\b(?:then|do|else|time|exec|sudo|env|xargs|watch)\s+)(?:bn|workspan)\s+(?=\S)"
 )
 
 

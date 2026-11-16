@@ -6,7 +6,7 @@ arguments:
   - { name: id, description: Attention item id., required: true }
   - { name: prompt, description: Attention task prompt., required: true }
 ---
-First run `bn --cat` to read this branch's goal, open todos, and decisions.
+Read the supplied attention packet and the governing task's context before editing.
 
 Task:
 

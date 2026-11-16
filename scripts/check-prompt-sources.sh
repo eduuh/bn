@@ -24,6 +24,20 @@ report_hits \
   "Static AI instructions found in production Rust; move them to config/agents or config/prompts:" \
   "$rust_hits"
 
+retired_hits=$(
+  grep -nHE \
+    'bn_(context|cat|add|done|drop|reopen|reword|goal|pr|status|handoff_read|handoff_write|sync)([^[:alnum:]_]|$)|(^|[[:space:]`(])(bn|workspan) (--cat|--path|add |done |goal |handoff |ingest([[:space:]`]|$)|tmux-note)' \
+    config/prompts/*.md config/agents/*.md config/AGENTS.md \
+    .github/copilot-instructions.md 2>/dev/null || true
+)
+report_hits "Retired session-note instructions found; use tasks/execution state or Entire:" "$retired_hits"
+
+retired_jobs=$(
+  grep -nHE '^[[:space:]]*job[[:space:]]*=[[:space:]]*"(commit-notes|recall-index)"' \
+    config/crons.toml 2>/dev/null || true
+)
+report_hits "Retired session-note jobs found in the scheduler:" "$retired_jobs"
+
 for file in config/jobs/*.sh; do
   [ -f "$file" ] || continue
 

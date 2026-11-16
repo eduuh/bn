@@ -508,7 +508,7 @@ pub fn load_ledger() -> Ledger {
 }
 
 fn save_ledger(ledger: &Ledger) -> std::io::Result<()> {
-    crate::store::save_json_atomic(&ledger_path(), ledger)
+    crate::fs::save_json_atomic(&ledger_path(), ledger)
 }
 
 // --- the decision ------------------------------------------------------------------------------

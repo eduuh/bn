@@ -25,7 +25,7 @@ pub(crate) fn emit_pr(
                 if as_json {
                     println!(
                         "{}",
-                        Envelope::success("pr", payload::pr_data(&o)).to_json()
+                        Envelope::success("pr", serde_json::json!(o)).to_json()
                     );
                 } else {
                     println!("PR linked: {}", o.pr);

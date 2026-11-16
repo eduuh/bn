@@ -1,11 +1,11 @@
 ---
 name: dispatch-plan-work-bootstrap
 internal: true
-description: Bootstrap a fresh build-from-plan dispatch whose note has only a goal
+description: "Bootstrap a new build-from-plan dispatch. Use when the assigned task has no plan artifact yet."
 ---
-The note starts with only the goal — there is no plan artifact yet, so build-from-plan's "no plan →
+The task has only a goal and no plan artifact yet, so build-from-plan's "no plan →
 stop and recommend `plan`" case does not apply here: write the plan first, then execute it. Run
-`bn plan init`, write the `plans/active.md` path it prints (under the note directory) as the Markdown execution contract (goal, 2-5 observable
-done-when criteria, ordered steps, risks, open questions), then execute the build-from-plan loop from
-it. Do not decompose the plan through repeated `bn add todo` / `bn add done-when` calls — keep
-the branch note as the index/status layer.
+`bn plan init`, then use `bn plan path` to locate the Markdown execution contract.
+Write the goal, 2-5 observable done-when criteria, ordered steps, risks, and open questions there,
+then execute the build-from-plan loop from it. Do not duplicate the plan's checklist in a
+separate task list or guess its filesystem location.

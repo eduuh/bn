@@ -97,7 +97,7 @@ fn unpushed_commits(wt: &Path) -> u32 {
 /// `ctrl-d` handler: remove the focused idle worktree after the [`delete_block`] guard clears. `arg`
 /// is fzf's `{1}~{2}` (`kind~payload`); only a `worktree` kind is removable. Refusals print a `✗`
 /// reason and `hold()` so the message survives the fzf `reload`.
-pub(super) fn rm_worktree(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
+pub(super) fn rm_worktree(_cfg: &Config, roots: &Roots, project: &str, arg: &str) {
     let (kind, payload) = arg.split_once('~').unwrap_or(("", arg));
     let repo = ref_repo(project);
     let wt_path = roots.worktree_dir(project).join(repo).join(payload);
@@ -132,7 +132,6 @@ pub(super) fn rm_worktree(cfg: &Config, roots: &Roots, project: &str, arg: &str)
     ]);
     if ok {
         crate::wt::rmdir_if_empty_repo(&wt_path, &roots.worktree_dir(project));
-        let _ = bn_core::lifecycle::prune(cfg);
         println!("✓ removed {repo}/{payload}");
     } else {
         eprintln!("✗ git refused to remove {repo}/{payload} (locked or raced dirty)");

@@ -419,7 +419,7 @@ pub fn known_repos(cfg: &Config) -> Vec<String> {
         .iter()
         .filter_map(|url| repo_name_from_url(url))
         .chain(
-            crate::rollups::all_notes(cfg)
+            crate::rollups::list(cfg)
                 .iter()
                 .map(|n| n.repo.to_ascii_lowercase()),
         )

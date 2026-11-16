@@ -817,7 +817,7 @@ impl OrchestrateState {
 
     /// Serialize to pretty JSON text.
     pub fn to_json(&self) -> std::io::Result<String> {
-        crate::store::to_json_pretty(self)
+        crate::fs::to_json_pretty(self)
     }
 
     /// Load the run state from `path`, or `None` if absent/unparseable.
@@ -829,7 +829,7 @@ impl OrchestrateState {
     /// Atomically persist to `path` (temp sibling + rename), creating the parent dir on demand — so
     /// a concurrent `bn orchestrate status` never reads a torn write.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        crate::store::save_json_atomic(path, self)
+        crate::fs::save_json_atomic(path, self)
     }
 
     // -----------------------------------------------------------------------
@@ -896,7 +896,7 @@ impl OrchestrateState {
 
 /// Locked read-modify-write of a run's state file — the atomic primitive #392 shares between the
 /// web write layer and the daemon's tick so a concurrent edit is never clobbered. Acquires the
-/// required [`crate::store::FileLock`] on `path`, loads the current state, applies `f`, stamps
+/// required [`crate::fs::FileLock`] on `path`, loads the current state, applies `f`, stamps
 /// `updated_at`, and atomically saves. Returns the closure's value, or `None` when no run exists at
 /// `path` (nothing to mutate). Lock and save failures are returned rather than permitting an
 /// unlocked mutation. The lock is held only for the (fast) in-memory mutation — never across a
@@ -905,7 +905,7 @@ pub fn mutate<R>(
     path: &Path,
     f: impl FnOnce(&mut OrchestrateState) -> R,
 ) -> std::io::Result<Option<R>> {
-    let _lock = crate::store::FileLock::acquire_required(path)?;
+    let _lock = crate::fs::FileLock::acquire_required(path)?;
     let Some(mut st) = OrchestrateState::load(path) else {
         return Ok(None);
     };

@@ -1,6 +1,6 @@
 ---
 name: dep-prs
-description: Burn down one repo's open dependency PRs (Dependabot, Renovate) - close superseded ones, merge safe green bumps, fix red ones, hand majors to a human - and report back to the coordinator
+description: "Resolve safe dependency PRs and report majors or blockers. Use when working a repo's Dependabot or Renovate queue."
 when: A repo has open dependency-update PRs to land, by hand or from the scheduled dep-prs lane on a worker machine.
 keywords: [dependabot, renovate, dependency, dependencies, bump, upgrade, packages, deps, npm, nuget, merge prs, update packages]
 arguments:
@@ -45,8 +45,8 @@ Your assignment: **{{task}}**
 7. After merges, the remaining PRs may need a rebase: repeat 4 for each until nothing changes.
 
 ## Reporting
-- Record each outcome in the branch note as you go: `bn add progress "#<n> merged"` or
-  `bn add blocker "#<n>: <why>"`.
+- Record each actionable outcome or blocker on the governing task/provider as you go.
+  Entire captures the run's session history.
 - When the pass ends, send the coordinator ONE message, if the assignment names one:
   `bn agent msg <coordinator> "<repo>: merged #a #b; closed superseded #c; fixed+merged #d; left #e (major: Stripe 53, see comment)"`.
 - If the coordinator messages you mid-run, answer it with one `bn agent msg` back and carry on.

@@ -96,7 +96,7 @@ pub enum WtCmd {
     /// Remove a worktree (interactive picker if none given) — the `prefix D` path.
     ///
     /// The same reclaim `cleanup` runs, just with a picker in front: it hands a pool slot's lease
-    /// back, closes the branch note, and applies the merged-PR / clean-tree gates. `--force` is the
+    /// back and applies the merged-PR / clean-tree gates. `--force` is the
     /// deliberate override, exactly as it is for `cleanup`.
     #[command(visible_alias = "rm")]
     Remove {
@@ -153,7 +153,7 @@ pub enum WtCmd {
         #[arg(long)]
         reclaim: bool,
     },
-    /// Verify a worktree's PR is merged, then remove it, delete its branch, close its note,
+    /// Verify a worktree's PR is merged, then remove it, delete its branch,
     /// and kill its tmux window(s). Default target: the current worktree.
     Cleanup {
         /// Sweep every worktree of the current repo and clean the merged ones. Outside a managed
@@ -187,7 +187,7 @@ pub enum WtCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Merge the current branch's GitHub PR, then clean up its worktree, branch, note, and tmux
+    /// Merge the current branch's GitHub PR, then clean up its worktree, branch, and tmux
     /// window — the local-action trigger for cleanup (no polling lag). GitHub only; ADO merges are
     /// reclaimed by the `cleanup --all` poller.
     ///

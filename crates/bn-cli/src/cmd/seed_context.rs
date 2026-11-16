@@ -82,17 +82,14 @@ mod tests {
             repo: "zz-no-such-repo".into(),
             branch: "feat".into(),
         };
-        std::fs::create_dir_all(cfg.note_dir(&ctx)).unwrap();
-        bn_core::commands::add(&cfg, &ctx, "directive", "never touch vendor/", None, "2026-09-25")
-            .unwrap();
+        std::fs::create_dir_all(cfg.artifact_dir(&ctx)).unwrap();
+        bn_core::task_store::capture(&cfg, "ship profiles", Some(ctx.rb()), "test").unwrap();
+        bn_core::task_doc::append_context(&cfg, &ctx, "Directives", "- never touch vendor/").unwrap();
         let refs = vec!["-".to_string()];
         let text = builtin(&cfg, &ctx, "ship", &refs).unwrap().text();
         assert_eq!(
             text,
-            "\n\nSTANDING INSTRUCTIONS for this branch — follow these for everything you do here. \
-             They were recorded with `bn agent instruct` and live in this branch's note under \
-             `## Directives`, so they apply to every session on this branch, not just this \
-             one:\n- never touch vendor/\n"
+            "\n\nTask instructions:\n- never touch vendor/\n"
         );
     }
 }

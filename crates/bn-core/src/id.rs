@@ -2,7 +2,7 @@
 //! section's ids matching `^<prefix>[0-9]+$`, take the numeric max, return
 //! `<prefix><max+1>`. Tracks max (not count) so ids of deleted items are never reused.
 
-use crate::model::Item;
+use crate::daily::Item;
 
 /// Next id for `prefix` given the section's existing items. Empty section ⇒ `<prefix>1`.
 pub fn next_id(items: &[Item], prefix: char) -> String {

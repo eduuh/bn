@@ -16,9 +16,8 @@ pub(crate) enum CmdShellUi {
         #[command(subcommand)]
         action: Box<crate::edit::EditCmd>,
     },
-    /// One-line status badge for the tmux status bar (replaces branch-note-status.sh).
-    /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; prints
-    /// nothing when there's no note or it's closed.
+    /// One-line task/execution status badge for the tmux status bar.
+    /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd.
     TmuxStatus { path: Option<String> },
     /// Report tmux sessions that name no repository on this machine, and with `--force` kill them.
     /// bn opens a session per repo and a window per worktree; anything else is left over from an
@@ -52,10 +51,7 @@ pub(crate) enum CmdShellUi {
         #[arg(long, hide = true)]
         refresh: bool,
     },
-    /// Focus segment for the tmux status bar (replaces workflow/bin/bn-goal-status.sh): the
-    /// linked PR's title (preferred, cached 5 min via gh) or the branch goal, truncated. Prints
-    /// a dim "set a goal" nudge when there's a note but no goal/PR; silent outside a repo.
-    TmuxGoal { path: Option<String> },
+
     /// Global attention tally for the tmux status bar (replaces
     /// workflow/bin/bn-attention-count.sh): counts windows `waiting` (an agent needs you) and
     /// `ready`/done across ALL sessions, amber→red once something has waited 15+ min. Silent
@@ -91,19 +87,17 @@ pub(crate) enum CmdShellUi {
         #[arg(long)]
         since: Option<String>,
     },
-    /// Open the current dir's branch note in $EDITOR (bound to prefix n; replaces
-    /// workflow/bin/tmux-note.sh). Execs the editor so closing it closes the popup.
-    TmuxNote,
+
     /// Icon-vocabulary cheatsheet: every Nerd Font glyph bn uses (name, codepoint, meaning)
     /// plus a mock of the two tmux status rows. If a row shows tofu/blanks, your font is
     /// missing the glyph. The mirrors listed in bn-core/src/glyph.rs must match this set.
     Glyphs,
-    /// Push the current note's counts into per-window tmux options (@bn_todos, @bn_blockers)
-    /// so the window list can decorate cheaply. Runs automatically after `bn add` / `bn done`
-    /// inside tmux. Decorates the window bn ran in; `bn tmux-reconcile` sweeps them all.
+    /// Push the current task's counts into per-window tmux options (@bn_todos, @bn_blockers)
+    /// so the window list can decorate cheaply. Decorates the window bn ran in;
+    /// `bn tmux-reconcile` sweeps them all.
     TmuxSync,
     /// Restore the window -> worktree link (@bn_repo/@bn_branch) across every window and refresh
-    /// their note badges: window options do not survive a tmux-resurrect restore, and badges are
+    /// their task badges: window options do not survive a tmux-resurrect restore, and badges are
     /// otherwise written only to the window bn ran in. Stamps only where a window's name agrees
     /// with the branch its pane is on; drift is reported, never guessed. Idempotent.
     TmuxReconcile {
@@ -120,25 +114,7 @@ pub(crate) enum CmdShellUi {
         /// working | waiting | done | clear
         state: String,
     },
-    /// Status for the current branch.
-    Status,
-    /// Lean context snapshot (goal, blockers, open todos, recent progress/decisions).
-    Brief,
-    /// Complete and close the branch note: mark open todos done, log an achievement (from the
-    /// note's Goal + PR, or `--achievement`), and set status closed. Run when work ships; then,
-    /// when run interactively inside a feature worktree, it reclaims that worktree the same way
-    /// `wt cleanup` does — removes it, deletes the branch, and kills its tmux window — provided
-    /// the PR is merged and the tree is clean (use `--force` to reclaim regardless).
-    Close {
-        /// Achievement line to log instead of the one derived from the Goal + PR.
-        #[arg(long)]
-        achievement: Option<String>,
-        /// Reclaim the worktree even if the PR isn't merged or the tree is dirty.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Reopen a closed branch note.
-    Reopen,
+
     /// Cut a GitHub release end-to-end (#627): bump the semver from the last tag (default patch,
     /// `--bump major|minor|patch`), create + push the tag, and `gh release create` with notes
     /// rolled up from the PRs merged since the last tag. Gated + idempotent — refuses on a dirty or

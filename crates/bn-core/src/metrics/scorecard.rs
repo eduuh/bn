@@ -197,27 +197,17 @@ pub fn scorecard(
         }
     };
 
-    let notes: Vec<_> = crate::rollups::all_notes(cfg)
-        .into_iter()
-        .filter(|n| !is_excluded_repo(&n.repo))
-        .collect();
-    let open_branches = notes.len();
-    let wip = notes
+    let branches = open_branch_wips(cfg, today);
+    let open_branches = branches.len();
+    let wip = branches
         .iter()
-        .filter(|n| n.note.front.todos.iter().any(|t| t.is_open_todo()))
+        .filter(|branch| branch.open_todos > 0)
         .count();
-    let mut ages: Vec<i64> = notes
-        .iter()
-        .filter_map(|n| crate::util::days_since(&n.note.front.created, today))
-        .collect();
+    let mut ages: Vec<i64> = branches.iter().map(|branch| branch.idle_days).collect();
     ages.sort_unstable();
-
-    // Partial progress: open todos advanced with `bn done --pct` across the active notes.
-    let pcts: Vec<u8> = notes
+    let pcts: Vec<u8> = crate::rollups::todos(cfg)
         .iter()
-        .flat_map(|n| n.note.front.todos.iter())
-        .filter(|t| t.is_open_todo())
-        .filter_map(|t| t.pct)
+        .filter_map(|task| task.pct)
         .collect();
     let partial = partial_progress(&pcts);
 

@@ -3,7 +3,8 @@
 Workspan uses the existing configuration layout during the `bn` compatibility period.
 `BN_*` variables and `~/.config/bn` remain supported; do not move live state just to rename the CLI.
 The historical `notes_root` name below still describes shared configuration/storage locations,
-not Workspan's product focus.
+not a session-note requirement. Entire owns session history; Workspan retains configuration,
+file/Forge tasks, references, and execution artifacts.
 
 Workspan needs no config file. Every setting below has a built-in default, and a machine with no config
 at all works on every repository it has cloned and runs cron and the dashboard.
@@ -12,17 +13,20 @@ at all works on every repository it has cloned and runs cron and the dashboard.
 
 | File | Holds |
 |---|---|
-| `<notes_root>/config.toml` | Settings every machine shares. It syncs with the rest of the notes tree. |
+| `<notes_root>/config.toml` | Settings every machine shares, alongside retained task and reference state. |
 | `<notes_root>/<machine>/config.toml` | What this machine does differently. A key here overrides the shared file, key by key. |
 
-`<notes_root>` is `~/projects/branch-notes`, or the work notes tree (`~/projects/notes/bn`) on a
+`<notes_root>` is `~/projects/branch-notes`, or the work storage root (`~/projects/notes/bn`) on a
 machine that has only that one. `<machine>` is the name bn pinned in `~/.bn/config/machine` the
 first time it ran.
 
-bn reads one notes tree. The old `~/projects/branch-notes-work/bn` fallback is merged into
-`~/projects/branch-notes` the first time a new `bn` runs: `tasks.txt` and `links.md` are unioned
-line by line, other files are copied unless already present, and the old tree is kept as
-`~/projects/branch-notes-work.migrated`.
+The historical root names remain compatible. Historical session-note files are archives, not a
+source for task context or execution state; retirement does not require importing or deleting them.
+
+`workspan run sync-state` synchronizes retained tasks, configuration, and references through an
+explicit path allowlist. Historical session notes and Entire's captured history are not inputs
+to that job. The Windows scheduled task keeps its old identity for in-place registration updates,
+but runs this state-only job.
 
 Both files are optional. Leave out anything you do not want to change.
 
@@ -34,9 +38,9 @@ file is kept as `config.toml.bak`, and `~/.bn/config/config-migration.txt` lists
 These are derived or fixed, so there is nothing to configure:
 
 - **Which machine this is.** Pinned in `~/.bn/config/machine`.
-- **Where the notes trees and worktrees are.** `~/projects/branch-notes`, `~/projects/notes/bn` and
+- **Where shared storage and worktrees are.** `~/projects/branch-notes`, `~/projects/notes/bn` and
   `~/projects/worktree`.
-- **Whether a machine is work-only.** True when it has the work notes tree and no personal one.
+- **Whether a machine is work-only.** True when it has the work storage root and no personal one.
 - **Warm pool size.** Derived from the slots on disk.
 
 ## Settings
@@ -54,7 +58,7 @@ What a machine should do less of. Usually set in that machine's own file.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `work_repos` | `[]` | Repositories whose notes go to the work notes tree. |
+| `work_repos` | `[]` | Repositories whose shared configuration/artifacts use the work storage root. |
 
 ### `[review]`
 
@@ -71,7 +75,7 @@ What a machine should do less of. Usually set in that machine's own file.
 | Key | Default | Meaning |
 |---|---|---|
 | `freshness` | `"exact"` | How current accepted evidence must be: `exact` (at HEAD), `ancestor`, or `any`. |
-| `done_requires` | `"warn"` | What `bn done w<N>` does without accepted evidence: `off`, `warn`, or `refuse`. |
+| `done_requires` | `"warn"` | Completion evidence policy: `off`, `warn`, or `refuse`. |
 | `capture` | `true` | Keep `bn verify` and `bn verify --rebased` runs as proof, with their output attached. |
 
 ### `[harness]`
@@ -94,13 +98,6 @@ What a machine should do less of. Usually set in that machine's own file.
 | `s` | `"30m"` | Duration of an `--est S` item. |
 | `m` | `"90m"` | Duration of an `--est M` item. |
 | `l` | `"3h"` | Duration of an `--est L` item. |
-
-### `[capture]`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `screenshot_dir` | none | Folder `bn note shot` takes screenshots from. |
-| `gif_dir` | none | Folder `bn note shot --gif` takes recordings from. |
 
 ### `[wrap]`, `[standup]`, `[dxi]`
 
@@ -132,6 +129,11 @@ What a machine should do less of. Usually set in that machine's own file.
 | Key | Default | Meaning |
 |---|---|---|
 | `home` | none | The one machine the agent staff runs on. Unset, it runs anywhere. |
+
+### `[capture]` (legacy)
+
+`screenshot_dir` and `gif_dir` are still parsed for configuration compatibility, but no longer
+have an effect. Branch-note screenshot and recording commands have been retired.
 
 ### `[mcp]`
 

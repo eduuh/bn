@@ -118,26 +118,22 @@ pub fn wip_guard_for(cfg: &Config, now: i64, window_days: i64, today: &str) -> W
     wip_guard(&branches, merged, window_days, today)
 }
 
-/// The open branches on this machine as [`BranchWip`] rows (excluded repos dropped). The shared
-/// note→rank mapping behind both the scorecard's WIP guard and `bn next`'s top row.
 pub(crate) fn open_branch_wips(cfg: &Config, today: &str) -> Vec<BranchWip> {
-    crate::rollups::all_notes(cfg)
+    crate::rollups::summary(cfg)
         .into_iter()
-        .filter(|n| !is_excluded_repo(&n.repo))
-        .map(|n| {
-            let last = crate::doctor::last_activity(&n.note);
+        .filter(|group| !is_excluded_repo(&group.repo))
+        .map(|group| {
+            let task = crate::pipeline::gate::governing_task(cfg, &group.repo, &group.branch);
+            let last = task
+                .as_ref()
+                .and_then(|task| task.created.as_deref())
+                .unwrap_or(today);
             BranchWip {
-                repo: n.repo.clone(),
-                branch: n.branch.clone(),
-                open_todos: n
-                    .note
-                    .front
-                    .todos
-                    .iter()
-                    .filter(|t| t.is_open_todo())
-                    .count(),
-                idle_days: crate::util::idle_days_since(&last, today),
-                has_pr: n.note.front.pr.is_some(),
+                idle_days: crate::util::idle_days_since(last, today),
+                has_pr: task.as_ref().is_some_and(|task| task.meta("pr").is_some()),
+                repo: group.repo,
+                branch: group.branch,
+                open_todos: group.todos.len(),
             }
         })
         .collect()

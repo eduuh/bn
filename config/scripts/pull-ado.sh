@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# pull-ado.sh — pull assigned, open Azure DevOps work items into a bn repo's main note as
-# idempotent "[#<id>] <title>" todos (the deterministic body of the `pull-ado` skill).
+# pull-ado.sh — pull assigned, open Azure DevOps work items into Workspan tasks.
 # PULL-ONLY: reads ADO, writes only to bn. Never writes back to ADO.
 #
 # Usage:
@@ -11,8 +10,7 @@
 # Omitted → all assigned open items. --org/--project pass through to az (else your
 # `az devops configure` defaults apply). Closed/Resolved/Removed/Done are filtered by the query
 # (note: state names are process-template-specific — templates using e.g. Completed/Inactive
-# need the list extended); `--if-absent "[#<id>]"` keeps re-pulls (and completed todos) from
-# being resurrected.
+# need the list extended). Source-scoped keys deduplicate re-pulls, including completed tasks.
 #
 # Degrades LOUDLY: missing az/python3 or an unresolvable repo exits non-zero with a one-line
 # reason on stderr, so the caller reports the failure instead of inventing items.
@@ -96,24 +94,19 @@ for w in rows:
 ')" || { echo "pull-ado: az boards query failed" >&2; exit 4; }
 
 if [ -z "$items" ]; then
-  echo "pull-ado: no assigned open work items — $REPO/main unchanged"
+  echo "pull-ado: no assigned open work items — $REPO tasks unchanged"
   exit 0
 fi
 
-new=0
-skipped=0
-new_ids=""
-while IFS=$'\t' read -r id title; do
-  [ -n "$id" ] || continue
-  out="$("$BN" add --repo "$REPO" --branch main todo "[#$id] $title" --if-absent "[#$id]")" ||
-    { echo "pull-ado: bn add failed for #$id" >&2; exit 5; }
-  case "$out" in
-    "Already in"*) skipped=$((skipped + 1)) ;;
-    *) new=$((new + 1)); new_ids="$new_ids #$id" ;;
-  esac
-done <<EOF
-$items
-EOF
-
-echo "pull-ado: $((new + skipped)) assigned items → $REPO/main — $new new, $skipped already present"
-[ -z "$new_ids" ] || echo "new:$new_ids"
+batch=$(printf '%s\n' "$items" | python3 -c '
+import json, sys
+repo = sys.argv[1]
+rows = []
+for line in sys.stdin:
+    item_id, title = line.rstrip("\n").split("\t", 1)
+    rows.append({"text": f"[#{item_id}] {title} repo:{repo}",
+                 "key": f"{repo}:{item_id}"})
+print(json.dumps(rows))
+' "$REPO") || { echo "pull-ado: could not prepare tasks" >&2; exit 5; }
+printf '%s\n' "$batch" | "$BN" task ingest --source pull-ado --branch "" --repo "$REPO" ||
+  { echo "pull-ado: task import failed" >&2; exit 5; }

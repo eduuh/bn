@@ -62,7 +62,7 @@ pub fn ingest(source: &str, items: Vec<FeedItem>) -> std::io::Result<()> {
         generated_at: crate::util::now_epoch_secs(),
         items,
     };
-    crate::store::save_json_atomic(&source_path(source), &rec)
+    crate::fs::save_json_atomic(&source_path(source), &rec)
 }
 
 /// Mirror a source's current items onto the attention list, reconciling against the feed's

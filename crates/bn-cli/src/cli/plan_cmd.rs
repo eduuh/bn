@@ -31,6 +31,4 @@ pub(crate) enum PlanCmd {
     Status,
     /// Promote a draft relative path or session id to plans/active.md.
     Promote { draft: String },
-    /// Create plans/active.md from legacy note sections when no plan file exists.
-    Migrate,
 }

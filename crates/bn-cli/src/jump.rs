@@ -448,7 +448,9 @@ fn preview(kind: &str, target: &str, title: &str, id: &str) {
                 println!("{target}\n\n↵ open link");
             }
         }
-        "blocked" => println!("a branch note with open blockers\n\nresolve it, then `bn done`"),
+        "blocked" => {
+            println!("a governing task with open blockers\n\nresolve them in the task context")
+        }
         _ => println!("select an action"),
     }
 }

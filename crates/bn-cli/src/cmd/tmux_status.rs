@@ -203,100 +203,6 @@ fn spawn_git_seg_refresh(dir: &std::path::Path) {
         .spawn();
 }
 
-// ---- bn tmux-goal : focus (PR title or goal) segment -------------------------------------------
-
-/// Truncate a focus label to `max` display chars, appending `…` when it overflows (matches the
-/// script's `printf '%.*s' … "$label"…`).
-pub(crate) fn truncate_label(label: &str, max: usize) -> String {
-    if label.chars().count() > max {
-        let kept: String = label.chars().take(max.saturating_sub(1)).collect();
-        format!("{kept}\u{2026}")
-    } else {
-        label.to_string()
-    }
-}
-
-/// Render the focus segment: the linked PR title (preferred) or the branch goal, truncated. An
-/// empty `label` renders the dim "set a goal" nudge. A `stale` label — a PR title served from an
-/// expired cache because `gh` could not be reached — renders dim, so a frozen title is
-/// distinguishable from a current one without spending any width on a marker.
-pub(crate) fn render_goal_seg(label: &str, stale: bool) -> String {
-    if label.is_empty() {
-        return "#[fg=#565f89]\u{25c6} set a goal".to_string();
-    }
-    let fg = if stale { "#565f89" } else { "#c0caf5" };
-    format!("#[fg={fg}]{}", truncate_label(label, 80))
-}
-
-/// `bn tmux-goal [path]` — emit the focus segment (PR title if linked, else branch goal). Prefers
-/// the PR title (the crystallized goal); the title needs a `gh` call so it is cached 5 min (the
-/// status-interval is seconds — we must not hit the network each tick). Reads the note directly
-/// (no self-shell + sed like the script did).
-pub(crate) fn emit_tmux_goal(cfg: &Config, path: Option<String>) {
-    let dir = path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    if !dir.is_dir() {
-        return;
-    }
-    let Ok(ctx) = resolver::resolve(cfg, &dir) else {
-        return;
-    };
-    let Ok(note) = bn_core::store::read(&cfg.note_file(&ctx)) else {
-        return;
-    };
-
-    let mut label = String::new();
-    let mut stale = false;
-    if let Some(pr) = &note.front.pr {
-        let pr_url = pr.display();
-        if pr_url.starts_with("http") {
-            (label, stale) = pr_title_cached(&pr_url);
-        }
-    }
-    if label.is_empty() {
-        // Falling back to the note's own goal — a local read, never stale.
-        stale = false;
-        if let Some(goal) = bn_core::render::goal_text(&note.body) {
-            label = goal;
-        }
-    }
-    print!("{}", render_goal_seg(&label, stale));
-}
-
-/// How long a fetched PR title stays fresh.
-const PR_TITLE_TTL_SECS: u64 = 300;
-/// First backoff window after a failed `gh` call, doubling to [`PR_TITLE_BACKOFF_MAX_SECS`].
-const PR_TITLE_BACKOFF_MIN_SECS: u64 = 30;
-/// Backoff ceiling — capped at the TTL so the title self-heals within one normal interval.
-const PR_TITLE_BACKOFF_MAX_SECS: u64 = 300;
-/// Wall-clock deadline for the status bar's `gh` call. The bar reruns every few seconds; a
-/// lookup that has not answered in this long is not going to answer usefully.
-const GH_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-
-/// Grow the backoff window after another failure: first miss waits
-/// [`PR_TITLE_BACKOFF_MIN_SECS`], each subsequent one doubles up to [`PR_TITLE_BACKOFF_MAX_SECS`].
-pub(crate) fn next_backoff(prev_secs: u64) -> u64 {
-    if prev_secs == 0 {
-        PR_TITLE_BACKOFF_MIN_SECS
-    } else {
-        prev_secs
-            .saturating_mul(2)
-            .clamp(PR_TITLE_BACKOFF_MIN_SECS, PR_TITLE_BACKOFF_MAX_SECS)
-    }
-}
-
-/// Whether the status bar should spend a `gh` call this tick. `cache_age` is the age of the
-/// stored title (`None` when never fetched); `miss` is `(age, backoff_window)` of the last failed
-/// attempt. A fresh title needs nothing; a recent failure must not be retried until its window
-/// has elapsed. Pure so the backoff is testable without a network or a clock.
-pub(crate) fn should_refetch(cache_age: Option<u64>, miss: Option<(u64, u64)>) -> bool {
-    if cache_age.is_some_and(|age| age < PR_TITLE_TTL_SECS) {
-        return false;
-    }
-    !matches!(miss, Some((age, window)) if age < window)
-}
-
 /// Age of `path` in whole seconds, or `None` when it does not exist / has no usable mtime.
 fn age_secs(path: &std::path::Path) -> Option<u64> {
     std::fs::metadata(path)
@@ -305,63 +211,6 @@ fn age_secs(path: &std::path::Path) -> Option<u64> {
         .elapsed()
         .ok()
         .map(|e| e.as_secs())
-}
-
-/// Resolve a PR's title, memoised on disk for [`PR_TITLE_TTL_SECS`]. Returns
-/// `(title, stale)` — `stale` when the value came from an expired cache the bar could not
-/// refresh, so the caller can render it dimmed rather than silently showing a frozen title.
-///
-/// The failure path used to return the stale title *without touching any file*, so the freshness
-/// test failed again on the very next tick: offline, on a VPN flap or under a `gh` rate limit
-/// this spawned `gh pr view` every few seconds forever, once per PR-linked worktree. A miss now
-/// records itself in a sibling `<key>.miss` marker holding the current backoff window, so
-/// failures cost one call per window instead of one per tick. The call is bounded too — an
-/// unbounded `gh` on a status segment stalls the whole row.
-fn pr_title_cached(pr_url: &str) -> (String, bool) {
-    let cache_dir = std::env::temp_dir().join("bn-prtitle");
-    let _ = std::fs::create_dir_all(&cache_dir);
-    let key: String = pr_url
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let cache = cache_dir.join(&key);
-    let miss_marker = cache_dir.join(format!("{key}.miss"));
-
-    let cache_age = age_secs(&cache);
-    let miss = age_secs(&miss_marker).map(|age| {
-        let window = std::fs::read_to_string(&miss_marker)
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .unwrap_or(PR_TITLE_BACKOFF_MIN_SECS);
-        (age, window)
-    });
-
-    let cached = || std::fs::read_to_string(&cache).unwrap_or_default();
-    if !should_refetch(cache_age, miss) {
-        // Either the title is still fresh, or we are inside a backoff window and must not spend
-        // another call. Fresh reads render normally; a held-back one is stale by definition.
-        let fresh = cache_age.is_some_and(|age| age < PR_TITLE_TTL_SECS);
-        return (cached(), !fresh);
-    }
-
-    match crate::gh::gh_capture_bounded(
-        &["pr", "view", pr_url, "--json", "title", "-q", ".title"],
-        GH_STATUS_TIMEOUT,
-    ) {
-        Some(title) if !title.trim().is_empty() => {
-            let title = title.trim().to_string();
-            let _ = std::fs::write(&cache, &title);
-            let _ = std::fs::remove_file(&miss_marker);
-            (title, false)
-        }
-        // gh failed / empty — keep the last title, and record the miss so the next tick backs
-        // off instead of firing again immediately.
-        _ => {
-            let window = next_backoff(miss.map(|(_, w)| w).unwrap_or(0));
-            let _ = std::fs::write(&miss_marker, window.to_string());
-            (cached(), true)
-        }
-    }
 }
 
 // ---- bn tmux-attn-count : global waiting/ready tally -------------------------------------------
@@ -748,45 +597,6 @@ pub(crate) fn noted_key_sections(raw: &str, label: &str) -> Vec<(String, Vec<(St
     sections
 }
 
-// ---- bn tmux-note : open the current branch note in $EDITOR (popup, prefix n) -------------------
-
-/// `bn tmux-note` — resolve the current dir's branch note and open it in the editor. Replaces
-/// workflow/bin/tmux-note.sh. Execs the editor (so closing it closes the popup); errors to stderr
-/// when the note dir can't be resolved.
-pub(crate) fn emit_tmux_note(cfg: &Config) {
-    let Ok(ctx) = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()) else {
-        eprintln!("bn: could not resolve branch note dir for this directory");
-        eprintln!("    Make sure you're inside a git repo.");
-        std::process::exit(1);
-    };
-    let note = cfg.note_file(&ctx);
-    if let Some(parent) = note.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
-    let status = std::process::Command::new(&editor).arg(&note).status();
-    std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(0));
-}
-
-/// Interactive single-line capture for the `bn add <section> --prompt` popup (prefix a/b). Prints
-/// the "Add <section> (empty to cancel):" prompt, reads one line from the tty, and returns it
-/// trimmed of the trailing newline. Empty (cancel) → `None`.
-pub(crate) fn prompt_capture(section: &str) -> Option<String> {
-    print!("Add {section} (empty to cancel): ");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-    let mut buf = String::new();
-    if std::io::stdin().read_line(&mut buf).is_err() {
-        return None;
-    }
-
-    let text = buf.trim_end_matches(['\n', '\r']).to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
 #[cfg(test)]
 mod attn_badge_tests {
     use super::*;
@@ -940,44 +750,6 @@ mod attn_badge_tests {
     }
 }
 
-#[cfg(test)]
-mod pr_title_backoff_tests {
-    use super::*;
-
-    /// A fresh title needs no call; an expired one does.
-    #[test]
-    fn a_fresh_title_is_not_refetched_and_an_expired_one_is() {
-        assert!(!should_refetch(Some(10), None));
-        assert!(should_refetch(Some(PR_TITLE_TTL_SECS), None));
-        assert!(should_refetch(None, None));
-    }
-
-    /// The bug this fixes: the failure path left no trace, so an expired cache re-fired `gh` on
-    /// every tick. Inside a recorded backoff window the bar must spend nothing.
-    #[test]
-    fn a_recent_failure_suppresses_the_next_call_until_its_window_elapses() {
-        assert!(!should_refetch(Some(9_999), Some((5, 30))));
-        assert!(should_refetch(Some(9_999), Some((30, 30))));
-    }
-
-    #[test]
-    fn the_backoff_window_doubles_from_thirty_seconds_up_to_the_ttl() {
-        assert_eq!(next_backoff(0), 30);
-        assert_eq!(next_backoff(30), 60);
-        assert_eq!(next_backoff(60), 120);
-        assert_eq!(next_backoff(240), PR_TITLE_BACKOFF_MAX_SECS);
-        assert_eq!(next_backoff(PR_TITLE_BACKOFF_MAX_SECS), PR_TITLE_BACKOFF_MAX_SECS);
-    }
-
-    /// A title the bar could not refresh renders dim, so a frozen title is distinguishable from a
-    /// current one — but an absent goal keeps its own distinct nudge.
-    #[test]
-    fn a_stale_title_renders_dim_and_a_fresh_one_bright() {
-        assert_eq!(render_goal_seg("ship it", false), "#[fg=#c0caf5]ship it");
-        assert_eq!(render_goal_seg("ship it", true), "#[fg=#565f89]ship it");
-        assert_eq!(render_goal_seg("", true), "#[fg=#565f89]\u{25c6} set a goal");
-    }
-}
 
 #[cfg(test)]
 mod tmux_help_tests {

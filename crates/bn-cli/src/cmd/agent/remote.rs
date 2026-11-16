@@ -10,6 +10,42 @@
 
 use std::process::{Command, Stdio};
 
+pub(super) fn launch_args(
+    harness: super::Harness,
+    plan: &super::LaunchPlan,
+    session_id: &str,
+) -> Vec<String> {
+    let mut launch: Vec<String> = ["bn", "agent", "launch", harness.bin()].map(String::from).into();
+    if let Some(seed) = &plan.seed {
+        launch.extend(["--seed".to_string(), seed.clone()]);
+    }
+    if plan.yolo_force {
+        launch.push("--yolo".to_string());
+    }
+    if plan.fresh {
+        launch.push("--fresh".to_string());
+    }
+    for (flag, value) in [("--session", &plan.session), ("--resume-session", &plan.resume_session)] {
+        if let Some(value) = value {
+            launch.extend([flag.to_string(), value.clone()]);
+        }
+    }
+    for dir in &plan.add_dirs {
+        launch.extend(["--add-dir".to_string(), dir.clone()]);
+    }
+    if plan.one_shot {
+        launch.push("--one-shot".to_string());
+    }
+    if plan.session.is_none() {
+        launch.extend(["--session".to_string(), session_id.to_string()]);
+    }
+    if !plan.passthrough.is_empty() {
+        launch.push("--".to_string());
+        launch.extend(plan.passthrough.clone());
+    }
+    launch
+}
+
 /// What the remote side did.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Started {
@@ -200,6 +236,24 @@ pub(crate) fn agent_pane(host: &str, window: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn review_regression_generated_session_stays_before_harness_arguments() {
+        let plan = super::super::LaunchPlan {
+            seed: None,
+            yolo_force: false,
+            fresh: true,
+            session: None,
+            resume_session: None,
+            add_dirs: vec![],
+            one_shot: false,
+            passthrough: vec!["--model".into(), "sonnet".into()],
+        };
+        let launch = super::launch_args(super::super::Harness::Claude, &plan, "generated");
+        let delimiter = launch.iter().position(|arg| arg == "--").unwrap();
+        assert!(launch[..delimiter].windows(2).any(|args| args == ["--session", "generated"]));
+        assert_eq!(&launch[delimiter + 1..], ["--model", "sonnet"]);
+    }
+
     use super::*;
 
     #[test]

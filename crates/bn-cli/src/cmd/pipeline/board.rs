@@ -12,20 +12,15 @@ pub(super) fn active_board(cfg: &Config) -> Vec<BoardEntry> {
         .into_iter()
         .map(|entry| ((entry.repo.clone(), entry.branch.clone()), entry))
         .collect();
-    let mut board: Vec<BoardEntry> = rollups::all_notes(cfg)
+    let mut board: Vec<BoardEntry> = rollups::list(cfg)
         .into_iter()
         .map(|branch_note| {
             let event = recorded.get(&(branch_note.repo.clone(), branch_note.branch.clone()));
-            let skill = stage::skill_for_note(&branch_note.note);
+            let skill = bn_core::pipeline::execution::policy(&branch_note.repo, &branch_note.branch).skill;
             BoardEntry {
                 repo: branch_note.repo,
                 branch: branch_note.branch,
-                stage: branch_note
-                    .note
-                    .front
-                    .stage
-                    .or_else(|| event.map(|entry| entry.stage))
-                    .unwrap_or(Stage::DEFAULT),
+                stage: event.map(|entry| entry.stage).unwrap_or(Stage::DEFAULT),
                 ts: event.map(|entry| entry.ts).unwrap_or(0),
                 skill,
             }
@@ -77,10 +72,7 @@ pub(crate) fn emit_pipeline_badge(cfg: &Config, path: Option<String>) {
     let Ok(ctx) = resolver::resolve(cfg, &dir) else {
         return;
     };
-    let Ok(note) = bn_core::store::read(&cfg.note_file(&ctx)) else {
-        return;
-    };
-    let stage = stage::current_for_note(&note).unwrap_or(Stage::DEFAULT);
+    let stage = stage::current(&ctx.repo, &ctx.branch).unwrap_or(Stage::DEFAULT);
     print!("{} {}", stage.glyph(), stage.as_str());
 }
 

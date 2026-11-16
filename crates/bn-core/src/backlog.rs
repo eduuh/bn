@@ -8,8 +8,8 @@
 //! lines so it stays bounded. The ordering / dedup / lease *policy* is pure and unit-tested on the
 //! in-memory [`Backlog`]; the file functions only do the I/O.
 
+use crate::fs::FileLock;
 use crate::orchestrate::derive_id;
-use crate::store::FileLock;
 use std::cmp::Reverse;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};

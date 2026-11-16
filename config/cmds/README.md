@@ -14,7 +14,7 @@ the exit code, stdout and stderr (120s timeout by default).
 
 ## Where a command lives
 
-Like jobs, highest precedence first: the branch note's `cmds/`, the project's committed
+Like jobs, highest precedence first: the workspace artifact directory's `cmds/`, the project's committed
 `.bn/cmds/`, the notes repo's `cmds/<repo>/`, then global: your work and personal notes'
 `cmds/` (`--new` writes to personal) and this directory, which ships with bn.
 

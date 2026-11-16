@@ -2,6 +2,10 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
     match action {
+        CmdInsights::Ingest { base } => {
+            let ctx = resolve_or_fail_json(cfg, json, "ingest");
+            run_ingest(cfg, &ctx, &base, json);
+        }
         CmdInsights::Search { query, limit } => emit_search(cfg, &query.join(" "), limit, json),
         CmdInsights::Reviews { path, fetch } => {
             if path {

@@ -95,6 +95,10 @@ pub(crate) fn emit_task_set(cfg: &Config, id: &str, pairs: &[String], as_json: b
     let task = file
         .task_mut(id)
         .unwrap_or_else(|| fail(&format!("bn task set: no task {id}")));
+    if edits.iter().any(|edit| edit.key == "repo") {
+        bn_core::task_doc::ensure(cfg, task)
+            .unwrap_or_else(|error| fail(&format!("bn task set: cannot preserve context: {error}")));
+    }
     apply(task, &edits);
     store
         .save(&file)

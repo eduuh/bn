@@ -30,20 +30,50 @@ pub(crate) fn resolve_dispatch_item(
     if raw.starts_with("http") {
         return (super::capture_title(raw), Some(raw.to_string()), None);
     }
-    if let Some(note) = ctx.and_then(|context| bn_core::store::read(&cfg.note_file(context)).ok()) {
-        let found = if is_dispatch_todo_id(raw) {
-            note.front.todos.iter().find(|todo| todo.id == raw)
-        } else {
+    let tasks = bn_core::task_store::task_store(cfg)
+        .load()
+        .unwrap_or_else(|error| {
+            eprintln!("bn dispatch: cannot load configured task provider: {error}");
+            std::process::exit(1);
+        });
+    let found = if is_dispatch_todo_id(raw) {
+        tasks.tasks().find(|task| task.id() == Some(raw))
+    } else {
+        ctx.and_then(|context| {
             let query = raw.to_lowercase();
-            note.front
-                .todos
-                .iter()
-                .find(|todo| todo.is_open_todo() && todo.text.to_lowercase().contains(&query))
-        };
-        if let Some(todo) = found {
-            let (title, url) = split_item_text(&todo.text);
-            return (title, url, Some(todo.id.clone()));
-        }
+            let mut matching = tasks.tasks().filter(|task| {
+                !task.done
+                    && task.meta("repo") == Some(context.repo.as_str())
+                    && task.summary().to_lowercase().contains(&query)
+            });
+            let first = matching.next();
+            if matching.next().is_none() {
+                first
+            } else {
+                None
+            }
+        })
+    };
+    if let Some(todo) = found {
+        let (title, url) = split_item_text(&todo.summary());
+        return (title, url, todo.id().map(str::to_string));
     }
     (raw.to_string(), None, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_global_task_id_resolves_outside_any_git_repo() {
+        let _lock = bn_core::test_support::env_lock();
+        let root = tempfile::tempdir().unwrap();
+        let cfg = bn_core::test_support::config(root.path());
+        let task =
+            bn_core::task_store::capture(&cfg, "Preserve task authority", None, "test").unwrap();
+        let (title, _, id) = resolve_dispatch_item(&cfg, None, task.id().unwrap());
+        assert_eq!(title, "Preserve task authority");
+        assert_eq!(id.as_deref(), task.id());
+    }
 }

@@ -1,11 +1,30 @@
-use crate::model::{Note, PlanMetadata};
+use crate::fs::{self, StoreError};
 use crate::resolver::{Config, Resolved};
-use crate::store::{self, StoreError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const ACTIVE_PLAN_REL: &str = "plans/active.md";
 pub const AGENT_PLANS_REL: &str = "plans/agents";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PlanMetadata {
+    active: Option<String>,
+    #[serde(default)]
+    drafts: Vec<String>,
+    status: Option<String>,
+    selected: Option<String>,
+    updated: Option<String>,
+}
+
+fn metadata(cfg: &Config, ctx: &Resolved) -> Result<PlanMetadata, PlanError> {
+    match std::fs::read(cfg.plan_dir(ctx).join("state.json")) {
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|e| PlanError::Io(std::io::Error::other(e)))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PlanMetadata::default()),
+        Err(e) => Err(e.into()),
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlanFile {
@@ -21,7 +40,7 @@ pub struct PlanFile {
 pub struct PlanStatus {
     pub repo: String,
     pub branch: String,
-    pub note_dir: String,
+    pub artifact_dir: String,
     pub active: String,
     pub active_abs: String,
     pub active_exists: bool,
@@ -67,7 +86,7 @@ pub fn init_active(cfg: &Config, ctx: &Resolved) -> Result<PathBuf, PlanError> {
     ensure_dirs(cfg, ctx)?;
     let path = cfg.active_plan_file(ctx);
     if !path.exists() {
-        store::write_atomic(&path, active_template(ctx).as_bytes())?;
+        fs::write_atomic(&path, active_template(ctx).as_bytes())?;
     }
     update_metadata(cfg, ctx, |plan| {
         plan.active
@@ -81,10 +100,10 @@ pub fn init_agent(cfg: &Config, ctx: &Resolved, session_id: &str) -> Result<Path
     ensure_dirs(cfg, ctx)?;
     let path = cfg.agent_plan_file(ctx, session_id);
     if !path.exists() {
-        store::write_atomic(&path, agent_template(ctx, session_id).as_bytes())?;
+        fs::write_atomic(&path, agent_template(ctx, session_id).as_bytes())?;
     }
     let rel = cfg
-        .note_relative_path(ctx, &path)
+        .artifact_relative_path(ctx, &path)
         .unwrap_or_else(|| format!("{AGENT_PLANS_REL}/{session_id}.md"));
     update_metadata(cfg, ctx, |plan| {
         if !plan.drafts.iter().any(|d| d == &rel) {
@@ -96,18 +115,14 @@ pub fn init_agent(cfg: &Config, ctx: &Resolved, session_id: &str) -> Result<Path
 }
 
 pub fn status(cfg: &Config, ctx: &Resolved) -> Result<PlanStatus, PlanError> {
-    ensure_dirs(cfg, ctx)?;
-    let note = store::read(&cfg.note_file(ctx)).ok();
-    let active = note
-        .as_ref()
-        .and_then(|note| note.front.plan.active.clone())
+    let plan = metadata(cfg, ctx)?;
+    let active = plan
+        .active
+        .clone()
         .unwrap_or_else(|| ACTIVE_PLAN_REL.to_string());
     let active_abs = resolve_relative(cfg, ctx, &active)?;
     let active_meta = file_meta(cfg, ctx, &active_abs)?;
-    let mut draft_rels = note
-        .as_ref()
-        .map(|note| note.front.plan.drafts.clone())
-        .unwrap_or_default();
+    let mut draft_rels = plan.drafts;
     for entry in std::fs::read_dir(cfg.agent_plan_dir(ctx))
         .into_iter()
         .flatten()
@@ -115,7 +130,7 @@ pub fn status(cfg: &Config, ctx: &Resolved) -> Result<PlanStatus, PlanError> {
     {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            if let Some(rel) = cfg.note_relative_path(ctx, &path) {
+            if let Some(rel) = cfg.artifact_relative_path(ctx, &path) {
                 if !draft_rels.iter().any(|existing| existing == &rel) {
                     draft_rels.push(rel);
                 }
@@ -133,20 +148,17 @@ pub fn status(cfg: &Config, ctx: &Resolved) -> Result<PlanStatus, PlanError> {
     Ok(PlanStatus {
         repo: ctx.repo.clone(),
         branch: ctx.branch.clone(),
-        note_dir: cfg.note_dir(ctx).display().to_string(),
+        artifact_dir: cfg.artifact_dir(ctx).display().to_string(),
         active: active_meta.path,
         active_abs: active_meta.absolute_path,
         active_exists: active_meta.exists,
-        status: note
-            .as_ref()
-            .and_then(|note| note.front.plan.status.clone())
-            .unwrap_or_else(|| {
-                if active_meta.exists {
-                    "drafting".to_string()
-                } else {
-                    "none".to_string()
-                }
-            }),
+        status: plan.status.unwrap_or_else(|| {
+            if active_meta.exists {
+                "drafting".to_string()
+            } else {
+                "none".to_string()
+            }
+        }),
         drafts,
     })
 }
@@ -155,9 +167,9 @@ pub fn promote(cfg: &Config, ctx: &Resolved, draft_rel: &str) -> Result<PathBuf,
     let source = resolve_relative(cfg, ctx, draft_rel)?;
     let active = init_active(cfg, ctx)?;
     let text = std::fs::read(&source)?;
-    store::write_atomic(&active, &text)?;
+    fs::write_atomic(&active, &text)?;
     let active_rel = cfg
-        .note_relative_path(ctx, &active)
+        .artifact_relative_path(ctx, &active)
         .unwrap_or_else(|| ACTIVE_PLAN_REL.to_string());
     update_metadata(cfg, ctx, |plan| {
         plan.active = Some(active_rel);
@@ -165,20 +177,6 @@ pub fn promote(cfg: &Config, ctx: &Resolved, draft_rel: &str) -> Result<PathBuf,
         plan.status = Some("ready".to_string());
     })?;
     Ok(active)
-}
-
-pub fn migrate(cfg: &Config, ctx: &Resolved) -> Result<PathBuf, PlanError> {
-    ensure_dirs(cfg, ctx)?;
-    let note = store::read(&cfg.note_file(ctx))?;
-    let path = cfg.active_plan_file(ctx);
-    if !path.exists() {
-        store::write_atomic(&path, legacy_plan_template(&note).as_bytes())?;
-    }
-    update_metadata(cfg, ctx, |plan| {
-        plan.active = Some(ACTIVE_PLAN_REL.to_string());
-        plan.status = Some("drafting".to_string());
-    })?;
-    Ok(path)
 }
 
 pub fn resolve_relative(cfg: &Config, ctx: &Resolved, rel: &str) -> Result<PathBuf, PlanError> {
@@ -193,11 +191,11 @@ pub fn resolve_relative(cfg: &Config, ctx: &Resolved, rel: &str) -> Result<PathB
     {
         return Err(PlanError::InvalidPath(rel.to_string()));
     }
-    let note_dir = cfg.note_dir(ctx);
-    let joined = note_dir.join(rel_path);
+    let artifact_dir = cfg.artifact_dir(ctx);
+    let joined = artifact_dir.join(rel_path);
     if joined.symlink_metadata().is_ok() {
         let canon = std::fs::canonicalize(&joined)?;
-        let note_canon = std::fs::canonicalize(&note_dir)?;
+        let note_canon = std::fs::canonicalize(&artifact_dir)?;
         if !canon.starts_with(&note_canon) {
             return Err(PlanError::InvalidPath(rel.to_string()));
         }
@@ -209,7 +207,7 @@ pub fn resolve_relative(cfg: &Config, ctx: &Resolved, rel: &str) -> Result<PathB
 
 pub fn file_meta(cfg: &Config, ctx: &Resolved, path: &Path) -> Result<PlanFile, PlanError> {
     let rel = cfg
-        .note_relative_path(ctx, path)
+        .artifact_relative_path(ctx, path)
         .ok_or_else(|| PlanError::InvalidPath(path.display().to_string()))?;
     let meta = std::fs::metadata(path).ok();
     let kind = if meta.as_ref().is_some_and(|m| m.is_dir()) {
@@ -241,12 +239,12 @@ fn update_metadata(
     ctx: &Resolved,
     mutate: impl FnOnce(&mut PlanMetadata),
 ) -> Result<(), PlanError> {
-    let note_path = cfg.note_file(ctx);
-    let _lock = store::NoteLock::acquire_required(&note_path)?;
-    let mut note = store::read(&note_path)?;
-    mutate(&mut note.front.plan);
-    note.front.plan.updated = Some(crate::util::today());
-    store::save(&note, &note_path)?;
+    let path = cfg.plan_dir(ctx).join("state.json");
+    let _lock = fs::FileLock::acquire_required(&path)?;
+    let mut plan = metadata(cfg, ctx)?;
+    mutate(&mut plan);
+    plan.updated = Some(crate::util::today());
+    fs::save_json_atomic(&path, &plan)?;
     Ok(())
 }
 
@@ -262,52 +260,6 @@ fn agent_template(ctx: &Resolved, session_id: &str) -> String {
         "# Agent Plan\n\n- repo: `{}`\n- branch: `{}`\n- session: `{}`\n\n## Goal\n\n## Proposed Approach\n\n## Done When\n\n## Steps\n\n## Risks\n\n## Open Questions\n",
         ctx.repo, ctx.branch, session_id
     )
-}
-
-fn legacy_plan_template(note: &Note) -> String {
-    let mut out = String::from("# Plan\n\n");
-    let goal = crate::render::goal_text(&note.body);
-    if let Some(goal) = goal.filter(|goal| !goal.is_empty()) {
-        out.push_str("## Goal\n\n");
-        out.push_str(&goal);
-        out.push_str("\n\n");
-    }
-    if !note.front.done_when.is_empty() {
-        out.push_str("## Done When\n\n");
-        for item in &note.front.done_when {
-            out.push_str("- ");
-            out.push_str(&item.text);
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-    if !note.front.todos.is_empty() {
-        out.push_str("## Steps\n\n");
-        for item in &note.front.todos {
-            out.push_str("- [ ] ");
-            out.push_str(&item.text);
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-    if !note.front.research.is_empty() {
-        out.push_str("## Research\n\n");
-        for item in &note.front.research {
-            out.push_str("- ");
-            out.push_str(&item.text);
-            out.push('\n');
-        }
-        out.push('\n');
-    }
-    if !note.front.decisions.is_empty() {
-        out.push_str("## Decisions\n\n");
-        for item in &note.front.decisions {
-            out.push_str("- ");
-            out.push_str(&item.text);
-            out.push('\n');
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -332,7 +284,7 @@ mod tests {
 
         assert!(path.ends_with("plans/agents/abc-def-ghi.md"));
         assert_eq!(
-            cfg.note_relative_path(&ctx, &path).as_deref(),
+            cfg.artifact_relative_path(&ctx, &path).as_deref(),
             Some("plans/agents/abc-def-ghi.md")
         );
     }
@@ -354,5 +306,30 @@ mod tests {
         let path = resolve_relative(&cfg, &ctx, "plans/active.md").expect("resolve");
 
         assert_eq!(path, cfg.active_plan_file(&ctx));
+    }
+
+    #[test]
+    fn task_and_plan_work_without_creating_session_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let (cfg, ctx) = cfg_and_ctx(temp.path());
+        assert_eq!(status(&cfg, &ctx).unwrap().status, "none");
+        assert!(!cfg.artifact_dir(&ctx).exists());
+        let task =
+            crate::task_store::capture(&cfg, "Implement a tested plan", Some(ctx.rb()), "test")
+                .unwrap();
+        let draft = init_agent(&cfg, &ctx, "worker").unwrap();
+        std::fs::write(&draft, "# Approved plan\n").unwrap();
+        let active = promote(&cfg, &ctx, "plans/agents/worker.md").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(active).unwrap(),
+            "# Approved plan\n"
+        );
+        assert_eq!(status(&cfg, &ctx).unwrap().status, "ready");
+        assert!(crate::task_doc::read(&cfg, &task).is_some());
+        let artifacts = cfg.artifact_dir(&ctx);
+        assert!(!artifacts.join("note.md").exists());
+        assert!(!artifacts.join("note.yaml").exists());
+        assert!(!artifacts.join("handoff.json").exists());
+        assert!(!artifacts.join("handoff.md").exists());
     }
 }

@@ -1,22 +1,18 @@
-//! Full-text search across every branch note and the design docs saved beside them —
-//! active *and* archived. Branch notes are organized by branch, which is the wrong axis
-//! for recall: months later you look for a topic, not the branch you happened to be on.
-//! This walks the whole corpus so durable knowledge stays findable.
+//! Full-text search across retained repository reference documents.
 
 use crate::resolver::Config;
-use crate::store;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// One matching line in a note or a sibling design doc.
+/// One matching line in a reference document.
 #[derive(Debug, Serialize)]
 pub struct SearchHit {
     pub repo: String,
     pub branch: String,
     pub path: String,
-    /// `note` for the branch note itself, `doc` for a design/investigation file beside it.
+    /// The retained artifact kind.
     pub kind: String,
-    /// The owning note's status (`active`/`closed`) so callers can rank live work first.
+    /// Artifact status for consumers of the search projection.
     pub status: String,
     pub line: usize,
     pub snippet: String,
@@ -24,9 +20,7 @@ pub struct SearchHit {
 
 const SNIPPET_MAX: usize = 200;
 
-/// Case-insensitive substring search over all note roots. Walks active and archived notes
-/// plus the `*.md` docs saved in the same directory, attributing each hit to the owning
-/// note's repo/branch (read from frontmatter, so `archive/` nesting doesn't confuse it).
+/// Case-insensitive substring search over retained repo references in each configured store.
 /// `limit` caps total hits (0 = uncapped).
 pub fn search(cfg: &Config, query: &str, limit: usize) -> Vec<SearchHit> {
     let needle = query.trim().to_lowercase();
@@ -35,35 +29,6 @@ pub fn search(cfg: &Config, query: &str, limit: usize) -> Vec<SearchHit> {
         return hits;
     }
     for root in cfg.each_notes_root() {
-        let mut note_files = Vec::new();
-        find_notes(root, &mut note_files);
-        note_files.sort();
-        for note_md in note_files {
-            let Ok(note) = store::read(&note_md) else {
-                continue;
-            };
-            let repo = note.front.repo.as_str();
-            let branch = note.front.branch.as_str();
-            let status = note.front.status.as_str();
-            let reached = |hits: &[SearchHit]| limit > 0 && hits.len() >= limit;
-            scan_file(&note_md, "note", repo, branch, status, &needle, &mut hits);
-            if reached(&hits) {
-                hits.truncate(limit);
-                return hits;
-            }
-            if let Some(dir) = note_md.parent() {
-                for doc in sibling_docs(dir) {
-                    scan_file(&doc, "doc", repo, branch, status, &needle, &mut hits);
-                    if reached(&hits) {
-                        hits.truncate(limit);
-                        return hits;
-                    }
-                }
-            }
-        }
-        // Repo reference notes have no owning `note.md`, so the walk above never reaches them.
-        // They're attributed to `<repo>/reference` — the area they live in, since they belong to
-        // the repo rather than to any branch.
         for (repo, path) in crate::references::notes_under_root(root) {
             scan_file(
                 &path,
@@ -81,45 +46,6 @@ pub fn search(cfg: &Config, query: &str, limit: usize) -> Vec<SearchHit> {
         }
     }
     hits
-}
-
-/// Recursively collect every `note.md` under `dir`, skipping VCS/dependency dirs.
-fn find_notes(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if matches!(name, ".git" | "node_modules") {
-                continue;
-            }
-            find_notes(&path, out);
-        } else if path.file_name().and_then(|s| s.to_str()) == Some("note.md") {
-            out.push(path);
-        }
-    }
-}
-
-/// The `*.md` design/investigation docs in `dir`, excluding the note and its achievements log.
-fn sibling_docs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut docs: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().and_then(|s| s.to_str()) == Some("md")
-                && !matches!(
-                    p.file_name().and_then(|s| s.to_str()),
-                    Some("note.md") | Some("achievements.md")
-                )
-        })
-        .collect();
-    docs.sort();
-    docs
 }
 
 /// Append a hit for every line in `path` containing `needle` (already lowercased).

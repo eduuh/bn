@@ -322,6 +322,7 @@ mod tests {
             work_class: WorkClass::Coding,
             launched_at: at,
             controller_id: None,
+            host: None,
         }
     }
 

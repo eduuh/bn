@@ -42,9 +42,7 @@ pub fn readiness_now(
     freshness: Option<Freshness>,
 ) -> (Readiness, Head) {
     let head = head(cfg, ctx);
-    let done_when = crate::store::read(&cfg.note_file(ctx))
-        .map(|n| n.front.done_when)
-        .unwrap_or_default();
+    let done_when = criteria(cfg, ctx);
     let listing = list(cfg, ctx);
     let (verdicts, _) = verdicts(cfg, ctx);
     let freshness = freshness
@@ -85,28 +83,17 @@ pub fn check_done(cfg: &Config, ctx: &Resolved, query: &str) -> DoneCheck {
     if policy == "off" {
         return DoneCheck::Clear;
     }
-    let Ok(note) = crate::store::read(&cfg.note_file(ctx)) else {
-        return DoneCheck::Clear;
-    };
+    let done_when = criteria(cfg, ctx);
     let q = query.trim();
     let needle = q.to_lowercase();
-    let open_w: Vec<_> = note
-        .front
-        .done_when
-        .iter()
-        .filter(|w| w.done != Some(true))
-        .collect();
+    let open_w: Vec<_> = done_when.iter().filter(|w| w.done != Some(true)).collect();
     let target = open_w.iter().copied().find(|w| w.id == q).or_else(|| {
         let hits: Vec<_> = open_w
             .iter()
             .copied()
             .filter(|w| w.text.to_lowercase().contains(&needle))
             .collect();
-        let todo_hit =
-            note.front.todos.iter().any(|t| {
-                t.is_open_todo() && (t.id == q || t.text.to_lowercase().contains(&needle))
-            });
-        (hits.len() == 1 && !todo_hit && !needle.is_empty()).then(|| hits[0])
+        (hits.len() == 1 && !needle.is_empty()).then(|| hits[0])
     });
     let Some(w) = target else {
         return DoneCheck::Clear;
@@ -119,6 +106,7 @@ pub fn check_done(cfg: &Config, ctx: &Resolved, query: &str) -> DoneCheck {
         Some(ItemState::Attached { proofs }) => {
             format!("has proof ({}) nobody has accepted yet", proofs.join(", "))
         }
+
         Some(ItemState::Stale { proof, .. }) => {
             format!("was accepted on {proof}, but the branch has moved since")
         }
@@ -135,4 +123,28 @@ pub fn check_done(cfg: &Config, ctx: &Resolved, query: &str) -> DoneCheck {
     } else {
         DoneCheck::Warn(msg)
     }
+}
+
+pub fn criteria(cfg: &Config, ctx: &Resolved) -> Vec<super::Criterion> {
+    crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
+        .and_then(|task| {
+            let scope = task
+                .uid()
+                .filter(|uid| !uid.is_empty())
+                .map(|uid| format!("{}:uid:{uid}", cfg.tasks_provider.label()));
+            crate::task_doc::read(cfg, &task).map(|doc| (scope, doc))
+        })
+        .map(|(scope, doc)| {
+            doc.done_when()
+                .into_iter()
+                .enumerate()
+                .map(|(index, (done, text))| super::Criterion {
+                    id: format!("w{}", index + 1),
+                    identity: scope.as_ref().map(|scope| format!("{scope}:{text}")),
+                    text,
+                    done: Some(done),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }

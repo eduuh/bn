@@ -14,23 +14,6 @@ use std::ffi::OsString;
 
 /// `(group, sub, legacy argv)`: `bn <group> <sub> …` runs `bn <legacy…> …`.
 pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
-    ("note", "path", &["note"]),
-    ("note", "close", &["close"]),
-    ("note", "reopen", &["reopen"]),
-    ("note", "rename", &["rename"]),
-    ("note", "archive", &["archive"]),
-    ("note", "prune", &["prune"]),
-    ("note", "stale", &["stale"]),
-    ("note", "clean", &["clean"]),
-    ("note", "migrate", &["migrate"]),
-    ("note", "migrate-layout", &["migrate-layout"]),
-    ("note", "reset", &["reset"]),
-    ("note", "files", &["files"]),
-    ("note", "shot", &["shot"]),
-    ("note", "why", &["why"]),
-    ("note", "log", &["log-progress"]),
-    ("add", "notes", &["notes"]),
-    ("add", "tc", &["tc"]),
     ("review", "plan", &["review"]),
     ("review", "diff", &["review-gate"]),
     ("review", "pr", &["review-pr"]),
@@ -41,8 +24,6 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
     ("agent", "registry", &["sessions"]),
     ("agent", "resume", &["resume"]),
     ("agent", "switch", &["switch"]),
-    ("agent", "handoff", &["handoff"]),
-    ("agent", "compact", &["compact"]),
     ("agent", "context", &["context"]),
     ("attn", "notify", &["notify"]),
     ("attn", "feed", &["feed"]),
@@ -60,7 +41,6 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
     ("setup", "shell-init", &["shell-init"]),
     ("setup", "mcp", &["mcp"]),
     ("setup", "completion", &["completion"]),
-    ("setup", "hooks", &["hooks"]),
     ("stats", "insights", &["insights"]),
     ("stats", "metrics", &["metrics"]),
     ("stats", "cost", &["cost"]),
@@ -68,7 +48,6 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
     ("stats", "event", &["event"]),
     ("tmux", "status", &["tmux-status"]),
     ("tmux", "git", &["tmux-git"]),
-    ("tmux", "goal", &["tmux-goal"]),
     ("tmux", "attn-count", &["tmux-attn-count"]),
     ("tmux", "done-badge", &["tmux-done-badge"]),
     ("tmux", "sync", &["tmux-sync"]),
@@ -76,7 +55,6 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
     ("tmux", "cockpit", &["tmux-cockpit"]),
     ("tmux", "help", &["tmux-help"]),
     ("tmux", "keys", &["tmux-keys"]),
-    ("tmux", "note", &["tmux-note"]),
     ("tmux", "prune", &["tmux-prune"]),
     ("tmux", "reconcile", &["tmux-reconcile"]),
     ("tmux", "snapshot-filter", &["tmux-snapshot-filter"]),
@@ -85,15 +63,8 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
 
 /// `(command, flag, legacy)`: `bn <command> … <flag> …` runs `bn <legacy> …` with the flag dropped.
 pub(crate) const FLAG_ROUTES: &[(&str, &str, &str)] = &[
-    ("cat", "--brief", "brief"),
-    ("list", "--todos", "todo"),
-    ("list", "--summary", "summary"),
-    ("list", "--worktrees", "worktrees"),
-    ("list", "--repos", "managed-repos"),
-    ("status", "--diff", "diff"),
     ("verify", "--rebased", "gate"),
     ("pr", "--wi", "link"),
-    ("add", "--url", "capture"),
     ("next", "--stale", "doctor"),
 ];
 
@@ -122,7 +93,7 @@ const NEW_GROUPS: &[(&str, &str)] = &[
 const HIDDEN: &[&str] = &["release", "open", "gap"];
 
 /// Routes that exist for hooks and jobs and stay out of group help.
-const QUIET_ROUTES: &[(&str, &str)] = &[("note", "log"), ("stats", "event"), ("fleet", "watch")];
+const QUIET_ROUTES: &[(&str, &str)] = &[("stats", "event"), ("fleet", "watch")];
 
 /// The clap command with grouped and hidden names hidden and the new groups listed.
 /// Use this instead of `Cli::command()` wherever the surface is shown (help, completions).
@@ -133,11 +104,6 @@ pub(crate) fn command() -> clap::Command {
 fn command_named(name: &'static str) -> clap::Command {
     let mut cmd = Cli::command().name(name);
     if name == "workspan" {
-        for legacy in [
-            "add", "done", "goal", "cat", "list", "search", "drop", "undone", "reword",
-        ] {
-            cmd = cmd.mut_subcommand(legacy, |s| s.hide(true));
-        }
         for (subcommand, about) in [
             (
                 "dispatch",
@@ -147,7 +113,6 @@ fn command_named(name: &'static str) -> clap::Command {
                 "verify",
                 "Run the workspace verification gate and retain its evidence",
             ),
-            ("note", "Legacy note compatibility commands"),
             ("plan", "Manage executable plan artifacts"),
             ("agent", "Launch, observe, resume, and steer coding agents"),
             ("machine", "Machine access, discovery, and configuration"),
@@ -362,17 +327,20 @@ mod tests {
     }
 
     #[test]
-    fn workspan_help_deemphasizes_notes_without_removing_compatibility() {
+    fn both_entry_points_reject_retired_note_commands() {
         let mut cmd = command_named("workspan");
         let help = cmd.render_help().to_string();
         assert!(help.contains("Usage: workspan"));
         assert!(!help.contains("Mark a todo done"));
-        assert!(cmd.try_get_matches_from(["workspan", "done", "t1"]).is_ok());
-        let mut legacy = command_named("bn");
-        assert!(legacy
-            .render_help()
-            .to_string()
-            .contains("Mark a todo done"));
+        for name in ["workspan", "bn"] {
+            for retired in [
+                "note", "goal", "cat", "done", "handoff", "compact", "capture",
+            ] {
+                assert!(command_named(name)
+                    .try_get_matches_from([name, retired])
+                    .is_err());
+            }
+        }
     }
 
     #[test]
@@ -388,20 +356,13 @@ mod tests {
 
     #[test]
     fn grouped_names_rewrite_to_the_legacy_command() {
-        assert_eq!(
-            parsed("note close --achievement x"),
-            ["close", "--achievement", "x"]
-        );
         assert_eq!(parsed("tmux status /tmp"), ["tmux-status", "/tmp"]);
-        assert_eq!(parsed("note path"), ["note"]);
         assert_eq!(parsed("review plan submit"), ["review", "submit"]);
         assert_eq!(parsed("agent registry"), ["sessions"]);
     }
 
     #[test]
     fn flag_routes_drop_the_flag_wherever_it_sits() {
-        assert_eq!(parsed("cat --brief"), ["brief"]);
-        assert_eq!(parsed("list --json --todos"), ["todo", "--json"]);
         assert_eq!(
             parsed("verify --job lint --rebased"),
             ["gate", "--job", "lint"]
@@ -431,10 +392,10 @@ mod tests {
 
     #[test]
     fn existing_groups_list_their_routed_commands_in_help() {
-        let Plan::Help(t, 0) = plan(argv("note --help")) else {
+        let Plan::Help(t, 0) = plan(argv("task --help")) else {
             panic!("no help")
         };
-        assert!(t.contains("close") && t.contains("migrate-layout") && !t.contains("  log "));
+        assert!(t.contains("claim") && t.contains("doc") && t.contains("ingest"));
     }
 
     #[test]
@@ -447,6 +408,32 @@ mod tests {
         assert!(!skills.contains("bn retro"));
         assert!(skills.contains("bn skills find"));
         assert!(skills.contains("bn skills render"));
+    }
+
+    #[test]
+    fn retained_execution_help_does_not_promise_note_runtime() {
+        for path in [
+            &["dispatch"][..],
+            &["verify"][..],
+            &["task"][..],
+            &["switch"][..],
+            &["agent", "done"][..],
+            &["agent", "send"][..],
+            &["agent", "relaunch"][..],
+            &["agent", "relaunch-repo"][..],
+        ] {
+            let mut args = vec!["bn"];
+            args.extend_from_slice(path);
+            args.push("--help");
+            let help = help_text(&args);
+            for retired in ["branch note", "branch-note", "note's", "handoff", "bn todo"] {
+                assert!(
+                    !help.contains(retired),
+                    "{} help still promises {retired}:\n{help}",
+                    path.join(" ")
+                );
+            }
+        }
     }
 
     #[test]

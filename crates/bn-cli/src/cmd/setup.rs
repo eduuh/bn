@@ -74,14 +74,11 @@ pub(crate) fn emit_tmux_status(cfg: &Config, path: Option<String>) {
     let Ok(ctx) = resolver::resolve(cfg, &dir) else {
         return;
     };
-    let Ok(note) = bn_core::store::read(&cfg.note_file(&ctx)) else {
+    let Some(status) = bn_core::rollups::status(cfg, &ctx) else {
         return;
     };
-    if note.front.status == "closed" {
-        return;
-    }
-    let todos = note.front.todos.iter().filter(|t| t.is_open_todo()).count();
-    let blockers = note.front.blockers.len();
+    let todos = status.open_todos;
+    let blockers = status.blockers;
     let mut out = String::new();
     if todos > 0 {
         out.push_str(&format!(" \u{f040}{todos}"));
@@ -116,13 +113,8 @@ pub(crate) fn sync_tmux(cfg: &Config, ctx: &Resolved) {
     {
         return;
     }
-    let (todos, blockers) = match bn_core::store::read(&cfg.note_file(ctx)) {
-        Ok(note) => (
-            note.front.todos.iter().filter(|t| t.is_open_todo()).count(),
-            note.front.blockers.len(),
-        ),
-        Err(_) => (0, 0),
-    };
+    let (todos, blockers) = bn_core::rollups::status(cfg, ctx)
+        .map(|entry| (entry.open_todos, entry.blockers)).unwrap_or_default();
     set_tmux_window_option("@bn_todos", &badge_count(todos));
     set_tmux_window_option("@bn_blockers", &badge_count(blockers));
 }

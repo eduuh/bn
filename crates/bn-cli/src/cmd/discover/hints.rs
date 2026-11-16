@@ -40,7 +40,6 @@ mod tests {
     use super::*;
     use crate::cmd::discover::tests::{fixture, repo, snapshot};
     use bn_core::test_support::env_lock;
-    use std::path::Path;
 
     fn check_emitted(data: &serde_json::Value) {
         let commands = data["commands"]
@@ -78,7 +77,7 @@ mod tests {
         ] {
             assert!(bn(&args).is_err(), "invalid hint accepted: {args:?}");
         }
-        assert!(bn(&["agent", "handoff", "read"]).is_ok());
+        assert!(bn(&["pipeline", "status"]).is_ok());
         assert!(bn(&["skills", "render", "quoted skill"]).is_ok());
     }
 
@@ -98,40 +97,19 @@ mod tests {
         assert_eq!(snapshot(dir.path()), before);
 
         let ctx = crate::resolver::resolve(&cfg, &repo).unwrap();
-        let note = cfg.note_file(&ctx);
-        std::fs::create_dir_all(note.parent().unwrap()).unwrap();
-        std::fs::write(&note, "---\nrepo: project\nbranch: feature\ncreated: 2026-10-09\nstatus: active\n---\n## Goal\n\nFix a crash\n").unwrap();
-        let handoff = bn_core::handoff::json_path(&cfg, &ctx);
-        write_handoff(&handoff);
+        let task = bn_core::task_store::capture(&cfg, "Fix a crash", Some(ctx.rb()), "test").unwrap();
         let before = snapshot(dir.path());
         let data = crate::cmd::discover::discover(&cfg, &repo, "fix a crash").unwrap();
         assert!(data["commands"]
             .as_array()
             .unwrap()
-            .contains(&serde_json::json!("bn --cat")));
+            .contains(&serde_json::json!(format!("bn task doc {}", task.id().unwrap()))));
         assert!(data["commands"]
             .as_array()
             .unwrap()
-            .contains(&serde_json::json!("bn handoff read")));
+            .contains(&serde_json::json!("bn pipeline status")));
         check_emitted(&data);
         assert_eq!(snapshot(dir.path()), before);
-    }
-
-    fn write_handoff(path: &Path) {
-        let note = bn_core::model::Note::new(
-            bn_core::resolver::RepoBranch {
-                repo: "project",
-                branch: "feature",
-            },
-            "2026-10-09",
-            "testhost",
-        );
-        let packet = bn_core::handoff::compose(
-            &note,
-            "2026-10-09",
-            &bn_core::handoff::HandoffInput::default(),
-        );
-        std::fs::write(path, serde_json::to_vec(&packet).unwrap()).unwrap();
     }
 
     #[test]

@@ -222,12 +222,8 @@ fn reconcile(cfg: &Config, dry_run: bool, report: bool) {
                     repo: id.repo.clone(),
                     branch: id.branch.clone(),
                 };
-                let counts = bn_core::store::read(&cfg.note_file(&ctx)).ok().map(|note| {
-                    (
-                        note.front.todos.iter().filter(|t| t.is_open_todo()).count(),
-                        note.front.blockers.len(),
-                    )
-                });
+                let counts = bn_core::rollups::status(cfg, &ctx)
+                    .map(|entry| (entry.open_todos, entry.blockers));
                 let pending = pending_writes(row, &id, counts);
                 if !pending.is_empty() {
                     writes.push((row.id.clone(), pending));

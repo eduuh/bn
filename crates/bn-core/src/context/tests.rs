@@ -1,6 +1,5 @@
 use super::*;
-use crate::model::Note;
-use crate::resolver::{Config, RepoBranch, Resolved};
+use crate::resolver::{Config, Resolved};
 
 fn setup(temp: &std::path::Path) -> (Config, Resolved, std::path::PathBuf) {
     let cfg = crate::test_support::config(temp);
@@ -8,26 +7,9 @@ fn setup(temp: &std::path::Path) -> (Config, Resolved, std::path::PathBuf) {
         repo: "bn".into(),
         branch: "feat".into(),
     };
-    std::fs::create_dir_all(cfg.note_dir(&ctx)).unwrap();
-    let note = Note::new(
-        RepoBranch {
-            repo: "bn",
-            branch: "feat",
-        },
-        "2026-09-25",
-        "testhost",
-    );
-    crate::store::save(&note, &cfg.note_file(&ctx)).unwrap();
-    crate::commands::set_goal(&cfg, &ctx, "ship profiles", "2026-09-25").unwrap();
-    crate::commands::add(
-        &cfg,
-        &ctx,
-        "directive",
-        "never touch vendor/",
-        None,
-        "2026-09-25",
-    )
-    .unwrap();
+    std::fs::create_dir_all(cfg.artifact_dir(&ctx)).unwrap();
+    crate::task_store::capture(&cfg, "ship profiles", Some(ctx.rb()), "test").unwrap();
+    crate::task_doc::append_context(&cfg, &ctx, "Directives", "- never touch vendor/").unwrap();
     let root = temp.join("repo");
     std::fs::create_dir_all(root.join(".bn")).unwrap();
     std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -94,13 +76,10 @@ fn composing_renders_in_order_and_counts_tokens() {
     let c = compose(&m, "p", &inputs(&cfg, &ctx, &root, &g), None, false).unwrap();
     let atoms: Vec<&str> = c.pieces.iter().map(|p| p.atom.as_str()).collect();
     assert_eq!(atoms, ["directives", "goal", "arch"]);
-    assert_eq!(c.empty, ["recap"]);
-    assert_eq!(c.missing, ["nope: no such atom"]);
+    assert!(c.empty.is_empty());
+    assert_eq!(c.missing, ["recap: no such atom", "nope: no such atom"]);
     let text = c.text();
-    assert!(
-        text.contains("never touch vendor/")
-            && text.contains("Goal for this branch: ship profiles")
-    );
+    assert!(text.contains("never touch vendor/") && text.contains("Task: ship profiles"));
     assert!(text.contains("three crates") && !text.contains("lots"));
     assert_eq!(c.total, c.pieces.iter().map(|p| p.tokens).sum::<usize>());
     assert_eq!((c.budget, c.overage), (None, 0));

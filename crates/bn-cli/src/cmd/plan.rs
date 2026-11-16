@@ -2,6 +2,7 @@ use crate::*;
 
 pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
     let ctx = resolve_or_exit(cfg);
+    let plain_path = matches!(&action, Some(PlanCmd::Init | PlanCmd::Path { .. }));
     let result = match action.unwrap_or(PlanCmd::Status) {
         PlanCmd::Init => bn_core::plan::init_active(cfg, &ctx).map(|path| {
             serde_json::json!({
@@ -18,7 +19,7 @@ pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
             path.map(|path| {
                 serde_json::json!({
                     "path": path.display().to_string(),
-                    "relative": cfg.note_relative_path(&ctx, &path),
+                    "relative": cfg.artifact_relative_path(&ctx, &path),
                 })
             })
         }
@@ -41,7 +42,7 @@ pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
                 draft
             } else {
                 let path = cfg.agent_plan_file(&ctx, &draft);
-                cfg.note_relative_path(&ctx, &path)
+                cfg.artifact_relative_path(&ctx, &path)
                     .unwrap_or_else(|| format!("plans/agents/{draft}.md"))
             };
             bn_core::plan::promote(cfg, &ctx, &draft).map(|path| {
@@ -52,30 +53,18 @@ pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
                 })
             })
         }
-        PlanCmd::Migrate => bn_core::plan::migrate(cfg, &ctx).map(|path| {
-            serde_json::json!({
-                "path": path.display().to_string(),
-                "relative": bn_core::plan::ACTIVE_PLAN_REL,
-            })
-        }),
-    };
 
+    };
     match result {
-        Ok(data) if as_json => println!("{}", Envelope::success("plan", data).to_json()),
         Ok(data) => {
-            if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
-                println!("{path}");
+            if as_json {
+                println!("{}", Envelope::success("plan", data).to_json());
+            } else if plain_path {
+                println!("{}", data["path"].as_str().unwrap_or_default());
             } else {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string())
-                );
+                println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
             }
         }
-        Err(error) if as_json => println!(
-            "{}",
-            Envelope::failure("plan", "plan-error", error.to_string()).to_json()
-        ),
-        Err(error) => fail(&format!("bn plan: {error}")),
+        Err(error) => fail_json(as_json, "plan", "plan-error", &error.to_string()),
     }
 }

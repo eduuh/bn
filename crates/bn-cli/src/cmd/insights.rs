@@ -508,10 +508,8 @@ pub(crate) fn parse_numstat(numstat: &str) -> (i64, i64, i64) {
     (insertions, deletions, files)
 }
 
-/// Pull a branch's session result back into its note + metrics. Summarizes the commits on the
-/// branch (vs `base`) and the diffstat into the note's `## Progress`, and logs an `ingest` metrics
-/// event. Read-only on git; the loop's closing move — what got done flows back to where it was
-/// planned. No commits vs base → nothing to ingest (no write).
+/// Record the branch's commits and diffstat in task context and metrics. No session history is
+/// read or captured. No commits against base means no write.
 pub(crate) fn run_ingest(cfg: &Config, ctx: &Resolved, base: &str, json: bool) {
     let wt = ingest_worktree(cfg, ctx);
     if !wt.is_dir() {
@@ -555,7 +553,9 @@ pub(crate) fn run_ingest(cfg: &Config, ctx: &Resolved, base: &str, json: bool) {
         date = today(),
         n = commits.len(),
     );
-    let _ = commands::append_body(cfg, ctx, "progress", &bullet, &today());
+    if let Err(error) = bn_core::task_doc::append_context(cfg, ctx, "Progress", &bullet) {
+        fail_json(json, "ingest", "task-context", &error.to_string());
+    }
 
     let mut map = serde_json::Map::new();
     map.insert("branch".into(), serde_json::json!(ctx.branch));
@@ -588,7 +588,7 @@ pub(crate) fn run_ingest(cfg: &Config, ctx: &Resolved, base: &str, json: bool) {
         );
         return;
     }
-    println!("Ingested {} → note Progress + metrics", ctx.branch);
+    println!("Ingested {} → task Progress + metrics", ctx.branch);
     println!(
         "  {} commit(s), +{insertions}/-{deletions} in {files} file(s)",
         commits.len()

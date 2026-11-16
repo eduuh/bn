@@ -237,7 +237,6 @@ pub(crate) struct Run<'a> {
 pub(crate) fn record_run(cfg: &Config, ctx: &Resolved, run: Run<'_>) -> Option<String> {
     if !cfg.proof_capture
         || std::env::var("BN_PROOF_CAPTURE").is_ok_and(|v| v == "0")
-        || !cfg.note_file(ctx).exists()
     {
         return None;
     }

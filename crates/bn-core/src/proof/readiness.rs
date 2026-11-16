@@ -1,9 +1,17 @@
 //! Readiness: where each `done-when` criterion stands, derived from proofs and verdicts. Pure.
 
 use super::model::{Judgement, Proof, Verdict};
-use crate::model::Item;
 use serde::Serialize;
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Criterion {
+    pub id: String,
+    pub text: String,
+    /// Missing on legacy tasks without a persisted UID; never fall back to their mutable alias.
+    pub identity: Option<String>,
+    pub done: Option<bool>,
+}
 
 /// How current an accepted proof's commit must be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -69,7 +77,7 @@ impl Readiness {
 
 /// Where each criterion stands. `is_ancestor(sha, head)` answers the `Ancestor` policy.
 pub fn derive(
-    done_when: &[Item],
+    done_when: &[Criterion],
     proofs: &[Proof],
     verdicts: &[Verdict],
     head: Option<&str>,
@@ -102,7 +110,11 @@ pub fn derive(
         .map(|w| {
             let mine: Vec<&Proof> = proofs
                 .iter()
-                .filter(|p| p.for_.contains(&w.id) && !withdrawn.contains(&p.id.as_str()))
+                .filter(|p| {
+                    w.identity.as_ref().is_some_and(|identity| {
+                        p.for_.iter().any(|id| p.criteria.get(id) == Some(identity))
+                    }) && !withdrawn.contains(&p.id.as_str())
+                })
                 .collect();
             let verdict = |p: &Proof| last.get(p.id.as_str()).copied();
             let accepted = |p: &Proof| {

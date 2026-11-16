@@ -36,7 +36,7 @@ pub(crate) use control_cmd::ControlCmd;
 mod verify_args;
 pub(crate) use verify_args::{VerifyArgs, VerifyCommandArgs};
 pub(crate) mod coord_group;
-pub(crate) use coord_group::{CmdCoord, CompactCmd, ContextCmd, ProofCmd, WatchdogCmd};
+pub(crate) use coord_group::{CmdCoord, ContextCmd, ProofCmd, WatchdogCmd};
 mod issue_kind;
 pub(crate) use issue_kind::IssueKindArg;
 mod issue_cmd;
@@ -53,44 +53,6 @@ pub(crate) use issue_cmd::IssueCmd;
 // append a new command to the LAST group (or start a new one) rather than inserting mid-list.
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdIntake {
-    /// Add an item to a section: bn add <section> <text...>
-    /// Sections: todo, blocker, decision, research, collab, ask, done-when (acceptance criteria).
-    Add {
-        section: String,
-        #[arg(required = false)]
-        text: Vec<String>,
-        /// Interactively prompt for the item text on the tty (one line; empty cancels). Used by
-        /// the tmux quick-capture popups (prefix a/b); replaces workflow/bin/bn-capture.sh.
-        #[arg(long)]
-        prompt: bool,
-        /// Target a specific note instead of the current dir's (pair with --branch).
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        /// Idempotent add: skip if any existing item in the section contains this key.
-        #[arg(long, value_name = "KEY")]
-        if_absent: Option<String>,
-        /// Attach a time estimate (`90m`, `2h`, `1h30m`) for calibration (`bn calib`). Stamped on
-        /// the item; the actual is derived from the punch log when you close it.
-        #[arg(long, value_name = "DUR")]
-        est: Option<String>,
-        /// Tag this item to a quarter goal by its key (`bn add todo … --q ship-v1`), linking
-        /// shipped work to a `bn quarter` goal so the impact agent can score it.
-        #[arg(long, value_name = "GOAL_KEY")]
-        q: Option<String>,
-    },
-    /// Capture an issue/PR URL as a branch-note item (default: a todo), carrying its resolved
-    /// title + URL so it flows into `bn next` and becomes dispatchable. GitHub issues/PRs resolve
-    /// their title via `gh`; anything else falls back to a readable tail of the URL.
-    #[command(visible_alias = "cap")]
-    Capture {
-        /// The issue or PR URL to capture.
-        url: String,
-        /// Section to file it under (default: todo).
-        #[arg(long, short = 's', default_value = "todo")]
-        section: String,
-    },
     /// Zero-friction global capture: bn q "<thought>" banks it in the inbox with a timestamp
     /// and repo/branch hint — no questions, no git ops. Bare `bn q` lists the inbox; routing
     /// happens later via `bn q drain` (also run by daily rollover and shown at focus end).
@@ -102,8 +64,8 @@ pub(crate) enum CmdIntake {
         text: Vec<String>,
     },
     /// Dispatch an item into an isolated worktree — from anywhere: resolve a todo id / issue-PR URL
-    /// / free text, create a worktree off the base branch, seed that branch's note with the item as
-    /// its goal, and open a window on it in the repo's tmux session. The execution end of `bn next`
+    /// / free text, create a worktree off the base branch, prepare task and execution context,
+    /// and open a window on it in the repo's tmux session. The execution end of `bn next`
     /// — what to do → doing it. Target another repo with `--repo <name>` (works outside any repo).
     Dispatch {
         /// A todo id (e.g. t3), an issue/PR URL, or free text describing the work.
@@ -124,7 +86,7 @@ pub(crate) enum CmdIntake {
         /// Don't open a tmux window even when inside tmux.
         #[arg(long)]
         no_tmux: bool,
-        /// Launch an AI agent in the worktree's window, seeded with the note to deliver the task end
+        /// Launch an AI agent in the worktree's window, seeded with task context to deliver the task end
         /// to end in one `ship-solo` session (investigate → implement → review, asking you when
         /// unclear). `--agent` alone lets the launch stage's harness decide (falling back to copilot);
         /// `--agent claude` (aka claudecode) or `--agent copilot` pins it. Opens the repo's tmux session.
@@ -244,7 +206,7 @@ pub(crate) enum CmdIntake {
         one_shot: bool,
     },
     /// Run this worktree's verification gate (all available `build`, `test`, and `lint` jobs) and record the
-    /// PASS/FAIL to the branch note's Progress. Exits non-zero on failure, so an agent can gate
+    /// PASS/FAIL as execution progress. Exits non-zero on failure, so an agent can gate
     /// "done" on it (see `bn dispatch --verify`). Runs in the current worktree, like `bn build`.
     Verify(VerifyCommandArgs),
     /// The no-mistake pre-land gate: rebase this worktree's HEAD onto a freshly-fetched
@@ -254,22 +216,7 @@ pub(crate) enum CmdIntake {
     /// a stale base" class: the suite runs against current main + your changes, in an isolated
     /// checkout — your own worktree is never touched.
     Gate(VerifyArgs),
-    /// Why does this code exist? Blame a file (or inspect a commit) and resolve its `BN-Note:`
-    /// trailers back to the branch notes that produced it — goal, decisions, matching done
-    /// todos — including closed and archived notes. The read side of `bn hooks install`.
-    Why {
-        /// A file path, or a commit-ish (sha, HEAD~2, a branch).
-        target: String,
-        /// Limit blame to a line range: `-L 120` or `-L 100,140` (file targets only).
-        #[arg(short = 'L', value_name = "START[,END]")]
-        lines: Option<String>,
-    },
-    /// Git-hook integration: stamp commits with `BN-Note:` trailers linking them to this
-    /// branch's note — the provenance `bn why` reads back.
-    Hooks {
-        #[command(subcommand)]
-        action: HooksCmd,
-    },
+
     /// Pre-grant an agent harness's folder-trust for a path (default: cwd), so a dispatched agent
     /// boots without the interactive "trust this folder?" prompt. Your opt-in for worktrees you
     /// made from your own repos — it rides on `bn dispatch --yolo`. Edits ~/.claude.json /
@@ -306,29 +253,7 @@ pub(crate) enum CmdReview {
         #[command(subcommand)]
         action: ReviewGateCmd,
     },
-    /// Mark a todo done by id or substring: bn done <id|substring...> [--pct N]
-    Done {
-        #[arg(required = true)]
-        query: Vec<String>,
-        /// Record partial progress (1-99) instead of closing; 100 completes. Shown in
-        /// `bn todo`/`bn --cat` so long-running items surface incremental progress.
-        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
-        pct: Option<u8>,
-    },
-    /// Pull this branch's session result back into its note + metrics: summarize the commits and
-    /// diffstat vs the base (default main) into the note's Progress, and log an `ingest` event.
-    /// Closes the dispatch loop — what got done flows back to where it was planned.
-    Ingest {
-        /// Branch to ingest (default: the current worktree's branch).
-        #[arg(long)]
-        branch: Option<String>,
-        /// Base ref to compare against (default: main).
-        #[arg(long, default_value = "main")]
-        base: String,
-    },
-    /// Read the note's Goal, or set it. No args reads (with --json: `{ "goal" }`);
-    /// `bn goal <text...>` sets it.
-    Goal { text: Vec<String> },
+
     /// Record something learned today (codebase, tooling): bn learned <text...>
     Learned { text: Vec<String> },
     /// Record a reflection — one thing to improve next time: bn reflect <text...>
@@ -362,11 +287,7 @@ pub(crate) enum CmdReview {
         #[arg(long)]
         agent: bool,
     },
-    /// Print the current branch note's path (creates it if missing).
-    Note,
-    /// Print the current branch note (action view) — the subcommand form of `bn --cat`, so the
-    /// standard resume prompt's `bn cat` works on the CLI, not just the MCP `bn_cat` tool.
-    Cat,
+
     /// Plan-review gate (#349): the human-in-the-loop checkpoint on a dispatched agent's plan. A
     /// `bn dispatch --plan` agent proposes a plan, registers it here, and pauses before implementing
     /// / opening a PR. Bare `bn review` lists; `approve` unblocks
@@ -380,15 +301,13 @@ pub(crate) enum CmdReview {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdPlanning {
-    /// Manage branch-scoped plan artifacts under the bn note directory.
+    /// Manage branch-scoped plan artifacts in the execution artifact directory.
     Plan {
         #[command(subcommand)]
         action: Option<PlanCmd>,
     },
-    /// List investigation files alongside the current note.
-    Files,
-    /// Active branch notes with their on-disk worktree dirs (JSON for the nvim picker;
-    /// text delegates to the richer bash rollup).
+
+    /// Active tasks with their branch execution state and on-disk worktree dirs (JSON or text).
     Worktrees,
     /// List the configured managed repos (clone URLs from `[managed_repos]`), one per line —
     /// the refresh-all job clones/refreshes these under the managed root. `--dir` prints that
@@ -398,13 +317,11 @@ pub(crate) enum CmdPlanning {
         #[arg(long)]
         dir: bool,
     },
-    /// List open todos across all branches.
-    Todo,
-    /// The task list — one global store for every repo (`<work_root>/tasks.txt`, todo.txt
-    /// format). Bare `bn task` shows what's actionable today: work dated today or earlier, plus
+
+    /// The task list — one configured file or Forge provider for every repo. Bare `bn task`
+    /// shows what's actionable today: work dated today or earlier, plus
     /// anything unscheduled. `--all` is the whole backlog; `--repo .` (or a name) narrows to one
-    /// repo. No git repo needed — it works from anywhere. Distinct from `bn todo` (the
-    /// branch-note rollup), which stays per-branch.
+    /// repo. No git repo needed — it works from anywhere.
     #[command(visible_alias = "t")]
     Task {
         #[command(subcommand)]
@@ -416,10 +333,7 @@ pub(crate) enum CmdPlanning {
         #[arg(long, global = true, value_name = "REPO")]
         repo: Option<String>,
     },
-    /// Per-branch rollup (open-todo + blocker counts).
-    List,
-    /// Per-branch rollup with the open todos and blockers.
-    Summary,
+
     /// Daily goals — a day-scoped, cross-branch todo list. Bare `bn daily` shows today
     /// (carrying forward yesterday's unfinished goals); `bn daily add/done/edit` manage it.
     #[command(visible_alias = "day")]
@@ -434,7 +348,12 @@ pub(crate) enum CmdPlanning {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdInsights {
-    /// Search all notes and design docs (active + archived): bn search <query...>
+    /// Record the branch's commit summary and diffstat in its task context and productivity metrics.
+    Ingest {
+        #[arg(long, default_value = "main")]
+        base: String,
+    },
+    /// Search retained repository references.
     Search {
         #[arg(required = true)]
         query: Vec<String>,
@@ -483,9 +402,9 @@ pub(crate) enum CmdInsights {
         #[arg(long)]
         ts: Option<i64>,
     },
-    /// Attention queue: notes with stale/blocked/no-goal unfinished work.
+    /// Attention queue: tasks with stale, blocked, or underspecified unfinished work.
     Doctor {
-        /// Flag notes untouched for at least this many days.
+        /// Flag tasks untouched for at least this many days.
         #[arg(long, default_value_t = bn_core::doctor::DEFAULT_STALE_DAYS)]
         stale_days: i64,
         /// Print a single summary line (for hooks); nothing when all clear.
@@ -503,7 +422,7 @@ pub(crate) enum CmdInsights {
         pick_fields: Vec<String>,
     },
     /// What to do now: one ranked action list folding cron failures, attention items, PRs
-    /// awaiting your review, your stale in-flight PRs, today's open goals, and blocked notes.
+    /// awaiting your review, your stale in-flight PRs, today's open goals, and blocked tasks.
     Next {
         /// How many actions to show (the full ranked list always goes to --json).
         #[arg(long, default_value_t = 5)]
@@ -568,22 +487,11 @@ pub(crate) use forge_app::ForgeAppCmd;
 pub(crate) use links_cmd::{LinksAddArgs, LinksArgs, LinksCmd};
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
-pub(crate) use staff_group::{CmdStaff, HandoffCmd};
+pub(crate) use staff_group::CmdStaff;
 pub(crate) use worker_cmd::WorkerCmd;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdGitPr {
-    /// Convert legacy notes (split/md-only) to the single-file format.
-    Migrate,
-    /// Relocate legacy <repo>/<branch> notes into the <machine>/<repo>/<branch> subtree.
-    MigrateLayout {
-        /// Report what would move without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-        /// Reconcile collisions by recency (newer note.md wins) instead of skipping them.
-        #[arg(long)]
-        force: bool,
-    },
     /// Link/open the PR for the current branch. `bn pr <url>` records it; bare `bn pr`
     /// resolves the stored PR (or `gh pr view`) and opens it (--copy / --show to copy/print).
     Pr {
@@ -603,29 +511,14 @@ pub(crate) enum CmdGitPr {
         /// Work-item id to record. Omit to read the stored work item.
         id: Option<String>,
     },
-    /// Append to (or, with no text, list) the note's free-text `## Notes` section.
-    #[command(visible_alias = "n")]
-    Notes { text: Vec<String> },
-    /// Append to (or, with no text, list) the note's `## Test Cases` section.
-    #[command(visible_aliases = ["testcase", "testcases"])]
-    Tc { text: Vec<String> },
-    /// Append a timestamped bullet to the note's `## Progress` section (SessionEnd hook).
+
+    /// Append a timestamped progress entry to the governing task's context.
     LogProgress {
         #[arg(required = true)]
         text: Vec<String>,
     },
-    /// Move the screenshot(s) you just captured into the branch note's folder and embed them
-    /// under `## Screenshots`. Grabs every file newer than the freshness window; `--gif` grabs
-    /// ScreenToGif recordings instead. Source folders come from `[capture]` in config.toml.
-    Shot {
-        /// Grab GIF recordings (from `[capture].gif_dir`) instead of screenshots.
-        #[arg(long)]
-        gif: bool,
-        /// Freshness window in seconds — only files newer than this are grabbed.
-        #[arg(long, default_value_t = 120)]
-        fresh: u64,
-    },
-    /// Git diff stat vs the branch's base, its note's open todos + blockers, and the commit-count
+
+    /// Git diff stat vs the branch's base, its task state and open questions, and the commit-count
     /// ahead. A quick "where am I" — for this branch, or for any other worktree via `--path` /
     /// `--repo`+`--branch`, which is what makes it usable as a picker preview.
     #[command(visible_alias = "d")]
@@ -633,7 +526,7 @@ pub(crate) enum CmdGitPr {
         /// Describe a different worktree: any directory inside it.
         #[arg(long, value_name = "DIR", conflicts_with_all = ["repo", "branch"])]
         path: Option<std::path::PathBuf>,
-        /// Describe another repo's branch by name (with `--branch`). Resolved through the note
+        /// Describe another repo's branch by name (with `--branch`). Resolved through the task
         /// rollup, so a pooled slot reports its real checkout.
         #[arg(long, requires = "branch")]
         repo: Option<String>,
@@ -657,30 +550,6 @@ pub(crate) enum CmdGitPr {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdMisc {
-    /// Remove empty-text placeholder items from the current note (or --all notes).
-    Clean {
-        /// Clean every active note instead of just the current branch's.
-        #[arg(long)]
-        all: bool,
-    },
-    /// Close every active note whose checked-out worktree was removed, then archive old
-    /// closed notes (worktree-managed repos only). Housekeeping for the cross-branch views.
-    Prune,
-    /// Active notes untouched for at least N days (by note activity date), most-idle first.
-    Stale {
-        /// Idle-days threshold (default 14).
-        #[arg(long, default_value_t = 14)]
-        days: i64,
-    },
-    /// Move closed notes older than N days into the root-level archive/ tree (recoverable).
-    Archive {
-        /// Age threshold in days against the note's created date (default 30).
-        #[arg(long, default_value_t = 30)]
-        days: i64,
-        /// Report what would move without touching the filesystem.
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// Print a shell completion script: bn completion <bash|zsh|fish|elvish|powershell>.
     /// Source it from your shell rc, e.g. `source <(bn completion zsh)`.
     Completion {
@@ -698,23 +567,8 @@ pub(crate) enum CmdMisc {
         /// Shell to emit wrappers for (bash or zsh).
         shell: Shell,
     },
-    /// Tear down every non-main worktree across all bare repos and close their notes. Bare `bn
-    /// reset` is a dry run; `bn reset --force` rebases each repo's main, removes the worktrees,
-    /// closes the notes, prunes stale refs, and archives. Port of the bash `reset`.
-    Reset {
-        /// Actually remove the worktrees (default: dry run).
-        #[arg(long)]
-        force: bool,
-    },
-    /// Rename the current branch and move its note folder atomically: `git branch -m`, move the
-    /// note dir, update the note's `branch` field, and repush (deleting the old upstream ref).
-    /// Port of the bash `rename`/`mv`.
-    #[command(visible_alias = "mv")]
-    Rename {
-        /// The new branch name.
-        new_branch: String,
-    },
-    /// Run a worktree's build script — `<note>/jobs/<name>.sh` resolved branch → repo → global,
+
+    /// Run a worktree's build script — `<branch-artifacts>/jobs/<name>.sh` resolved branch → repo → global,
     /// with `build` as the default and `--repo`/`--branch` for callers whose cwd can't answer it.
     Build {
         /// Emit a machine-readable JSON envelope instead of human text.
@@ -787,7 +641,7 @@ pub(crate) enum CmdMisc {
     },
     /// Fresh-context CRITIC stage (#649): dispatch a leak-proof critic over a PR's diff, then
     /// drive the execute↔critique loop. `bn critic dispatch --branch <b> --pr <url>` cuts a
-    /// **fresh worktree off the PR head** with a plan-free note and launches a `--fresh` critic
+    /// **fresh worktree off the PR head** with plan-free execution context and launches a `--fresh` critic
     /// lane seeded with ONLY the diff + done-when criteria (never the approved plan) — so the
     /// critic starts with zero prior turns and can't rationalize the code. The critic reports via
     /// `bn critic verdict --pass` / `--fail --findings-file <p>`: PASS advances to shippable; FAIL
@@ -814,7 +668,7 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: crate::cmd::forge_agent::ForgeAgentCmd,
     },
-    /// A task's place in the pipeline. **Bare** `bn pipeline` infers it read-only from notes,
+    /// A task's place in the pipeline. **Bare** `bn pipeline` infers it read-only from task and execution state,
     /// plan reviews, attention, verify/PR markers, and live agents (#657); `--all` lists the
     /// fleet, `--repo`/`--branch` targets another worktree. **Subcommands** drive the explicit
     /// per-worktree stage machine (PIPE-A, EPIC #746) through the observable stages
@@ -844,7 +698,7 @@ pub(crate) enum CmdMisc {
     Version,
     /// Your repo fleet as one addressable thing: the inventory of every bare clone, and a
     /// parallel fan-out that runs one command in all of them and reports each repo's own exit
-    /// code. `bn list` already spans repos on the notes side; this is the git side.
+    /// code. Task views already span repos through the configured provider; this is the git side.
     #[command(args_conflicts_with_subcommands = true)]
     Repos {
         #[command(subcommand)]
@@ -1107,13 +961,13 @@ pub(crate) enum McpCmd {
         #[arg(long)]
         with_extras: bool,
     },
-    /// Serve the branch-note MCP tools over **stdio**, pinned to the current worktree. This is the
+    /// Serve command, reference and link tools over **stdio**, pinned to the current worktree. This is the
     /// per-worktree launcher an MCP client (`{command:"bn", args:["mcp","serve"]}`) spawns: it
     /// execs the sibling `bn-mcp` binary, which derives its `(repo, branch)` from the launch cwd —
     /// so no per-call scope headers are needed. `--orchestrate` serves the cross-worktree
-    /// "friend" toolset instead of the scoped branch-note tools.
+    /// "friend" toolset instead of the scoped tools.
     Serve {
-        /// Serve the cross-worktree orchestrator tools instead of the scoped branch-note tools.
+        /// Serve the cross-worktree orchestrator tools instead of the scoped command/reference/link tools.
         #[arg(long)]
         orchestrate: bool,
     },
@@ -1396,12 +1250,12 @@ pub(crate) enum AttnCmd {
         #[arg(long)]
         agent: bool,
     },
-    /// Promote a branch todo into a loop-ready attention item (the inverse of `plan`): bn attn
-    /// promote <todo-id> [--mode auto] [--repo R --branch B]. The prompt is seeded from the note's
-    /// goal + todo text (the launched agent reads the full note itself); re-promoting an
+    /// Promote a task into a loop-ready attention item (the inverse of `plan`): bn attn
+    /// promote <todo-id> [--mode auto] [--repo R --branch B]. The prompt names the task and its
+    /// summary; the launched agent reads the task document. Re-promoting an
     /// already-queued todo is a no-op. The todo stays open — the agent checks it off as the work.
     Promote {
-        /// The todo's id in the branch note (e.g. t3).
+        /// The task's id in the configured provider (e.g. t3).
         todo_id: String,
         /// How the item may be actioned: auto (default — feed the loop) | assist | manual.
         #[arg(long, default_value = "auto")]
@@ -1409,7 +1263,7 @@ pub(crate) enum AttnCmd {
         /// info | warn | urgent (default warn).
         #[arg(long, default_value = "warn")]
         severity: String,
-        /// Target note (defaults to the current worktree's).
+        /// Target execution repo (defaults to the current worktree's).
         #[arg(long)]
         repo: Option<String>,
         #[arg(long)]
@@ -1460,11 +1314,11 @@ pub(crate) enum NotifyCmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum QCmd {
-    /// Triage the inbox: route each capture to a branch todo/research, today's goals, the
+    /// Triage the inbox: route each capture to task context, today's goals, the
     /// attention queue, or drop it. Interactive (needs a tty) unless --auto.
     Drain {
-        /// Non-interactive: route only unambiguous captures (hinted at a still-active branch
-        /// note → that branch's todo) and leave the rest.
+        /// Non-interactive: route only unambiguous captures hinted at an active task/worktree
+        /// and leave the rest.
         #[arg(long)]
         auto: bool,
     },
@@ -1476,21 +1330,5 @@ pub(crate) enum SessionsCmd {
     Resume {
         /// Exact task name, full session id, or unambiguous session-id prefix.
         name_or_id: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum HooksCmd {
-    /// Install the prepare-commit-msg hook for this repo (idempotent; chains any existing
-    /// hook; lands in core.hooksPath or the git common dir, so it covers all worktrees).
-    Install,
-    /// Hook entry point: stamp BN-Note trailers onto the commit-message file. Called by the
-    /// installed prepare-commit-msg shim, not by hand.
-    #[command(hide = true, name = "run-prepare-commit-msg")]
-    RunPrepareCommitMsg {
-        msg_file: std::path::PathBuf,
-        source: Option<String>,
-        /// The commit sha for -c/-C/--amend sources; unused, accepted for hook-arg parity.
-        sha: Option<String>,
     },
 }

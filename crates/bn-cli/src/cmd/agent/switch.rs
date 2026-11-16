@@ -6,7 +6,7 @@ use super::*;
 /// orientation plus the command to resume in the target harness. The continuity one-shot for
 /// hopping harnesses mid-task (e.g. Claude hit a limit → finish in Copilot). With `in_place`,
 /// the swap is performed rather than printed: trust is granted and the worktree's tmux pane is
-/// respawned running the target harness (shell-backed), seeded to read the handoff.
+/// respawned running the target harness (shell-backed), seeded to load task and plan context.
 ///
 /// Returns whether the switch succeeded. The result rather than a bare `exit` because
 /// Automated recovery can call this for each usage-limited agent: one target whose worktree or window
@@ -91,47 +91,6 @@ pub(crate) fn emit_switch(
         .as_ref()
         .and_then(|o| bn_core::agent::last_request_for(&o.session_id, &o.harness));
 
-    // Fold the WIP into the note so the handoff (composed from the note) carries what was done:
-    // a progress bullet (deduped against an identical line) and a review-and-commit todo.
-    if let Some(wc) = &wip {
-        let line = bn_core::agent::wip_progress_line(wc);
-        let already = bn_core::store::read(&cfg.note_file(ctx))
-            .map(|n| n.body.contains(&line))
-            .unwrap_or(false);
-        if !already {
-            let _ = commands::append_body(cfg, ctx, "progress", &line, &today());
-        }
-        let todo = "Review & commit the WIP left when switching harnesses";
-        let _ = commands::add(cfg, ctx, "todo", todo, Some(todo), &today());
-    }
-
-    // Compose + persist the handoff from the (now WIP-aware) note plus the switch narrative — the
-    // author layer an agent would otherwise write by hand at session end.
-    let narrative = bn_core::agent::switch_narrative(
-        &to,
-        outgoing.as_ref(),
-        wip.as_ref(),
-        last_request.as_deref(),
-    );
-    let input = bn_core::handoff::HandoffInput {
-        narrative: Some(narrative),
-        ..Default::default()
-    };
-    let handoff = match bn_core::handoff::write(cfg, ctx, &today(), &input) {
-        Ok(h) => h,
-        Err(e) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::failure("switch", "no_note", format!("bn switch: {e}")).to_json()
-                );
-            } else {
-                eprintln!("bn switch: {e}");
-            }
-            return false;
-        }
-    };
-
     // Record the switch to the synced metrics log. Every switch path lands here (`bn switch`, the
     // fleet auto-switch #307, orchestrator relaunch), so this is the single chokepoint that makes
     // harness-hop frequency visible in `bn metrics` (#326). Emitted *before* the in-place swap,
@@ -188,7 +147,7 @@ pub(crate) fn emit_switch(
             "wip": wip,
             "last_request": last_request,
             "launch_command": launch,
-            "handoff": payload::handoff_data(&handoff),
+            "context": "task, plan, pipeline; Entire for session history",
         });
         let envelope = switch_envelope(data, swap.as_ref(), &launch);
         let ok = envelope.ok;
@@ -196,10 +155,9 @@ pub(crate) fn emit_switch(
         return ok;
     }
 
-    print!("{}", bn_core::handoff::render_orientation(&handoff));
     match &swap {
         Some(SwapOutcome { pane: Some(p), .. }) => {
-            println!("\nSwapped in place: {to} relaunched in pane {p} (shell-backed), seeded to read the handoff.");
+            println!("\nSwapped in place: {to} relaunched in pane {p} (shell-backed), seeded to load task and plan context.");
         }
         Some(SwapOutcome {
             error: Some(why), ..
@@ -444,7 +402,7 @@ pub(crate) fn default_resume_prompt(ctx: &Resolved, from: Option<&str>) -> Strin
         None => String::new(),
     };
     format!(
-        "Resuming {}/{}{switched}. First run `bn handoff read` (and `bn cat`) to load the resume packet, then work the priority queue.",
+        "Resuming {}/{}{switched}. Run `workspan discover`, `workspan task list`, `workspan plan status` and `workspan pipeline status`; read the governing task with `workspan task doc <id>`. Use Entire for prior session history. Continue the task, inspecting the working tree before changing it.",
         ctx.repo, ctx.branch
     )
 }

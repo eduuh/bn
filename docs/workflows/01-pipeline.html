@@ -297,19 +297,16 @@ rather than applied.
 </p>
 
 <p>
-The reason is concrete and worth stating plainly: <code>bn_add</code> exposes the
-<code>decision</code> section over MCP. Without the ratchet, an agent sitting behind a hold
-could write <code>pipeline: execute gate=auto</code> into its own note and release itself.
-<span class="src">profile.rs:19-24</span>
+An agent waiting behind a hold must not release itself by changing a lower-priority execution
+profile. Retiring session notes does not weaken the gate's approval contract.
 </p>
 
 <h2>How a transition is recorded</h2>
 
 <p>
-Two records, and they do not travel together. The durable current stage is note frontmatter
-(<code>stage: Option&lt;Stage&gt;</code>); every transition is <em>also</em> appended to the
-event log as kind <code>pipeline_stage</code>.
-<span class="src">crates/bn-core/src/model.rs:139 · pipeline/stage.rs:18, :183-189</span>
+The pipeline records execution stage and transitions independently of captured session history.
+Use <code>workspan pipeline status</code> to inspect the recorded stage and history rather than
+reading or editing a session document.
 </p>
 
 <p>
@@ -348,9 +345,8 @@ approved plan could leak.
 its own worktree. <span class="src">crates/bn-cli/src/cmd/critic.rs:138-143</span></li>
 <li>The diff is computed by the driver, not the agent, as three-dot
 <code>base...HEAD</code>. <span class="src">critic.rs:157-160</span></li>
-<li>A <strong>plan-free note</strong> is seeded whose goal is only "critique this diff", so
-the critic cannot recover the plan with <code>bn --cat</code>.
-<span class="src">critic.rs:161-181</span></li>
+<li>A <strong>plan-free runtime packet</strong> supplies only the diff and acceptance contract,
+not the implementer's reasoning history.</li>
 <li>The harness launches <code>--fresh</code> with a brand-new session id and zero prior
 turns. <span class="src">critic.rs:227-232</span></li>
 </ul>

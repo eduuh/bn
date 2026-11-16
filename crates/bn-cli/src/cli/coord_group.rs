@@ -14,7 +14,7 @@ pub(crate) enum CmdCoord {
         #[command(subcommand)]
         action: Option<WatchdogCmd>,
     },
-    /// Evidence for this branch's done-when criteria, kept beside its note in `proof/`. A proof
+    /// Evidence for the governing task's done-when criteria, kept in branch-scoped `proof/`. A proof
     /// (`p<N>`) says what was checked, at which commit, by whom; a verdict from someone other
     /// than its author accepts or rejects it; readiness per criterion is derived from both, never
     /// written by hand. `bn verify --for w1` records one for you. Bare `bn proof` shows readiness.
@@ -22,16 +22,9 @@ pub(crate) enum CmdCoord {
         #[command(subcommand)]
         action: Option<ProofCmd>,
     },
-    /// Compaction discipline. Compaction is not an unblock: what comes back believes it knows
-    /// everything and does not. So plan it (`plan` shows every live agent's context use), prepare
-    /// for it (a recap and handoff written first), and audit what comes back. Bare `bn compact`
-    /// is `plan`.
-    Compact {
-        #[command(subcommand)]
-        action: Option<CompactCmd>,
-    },
+
     /// Context profiles: the standing context a seat is handed, composed from atoms (directives,
-    /// goal, readiness, recap, handoff, reference index or sections, skills, file sections) with a
+    /// goal, proof readiness, reference index or sections, skills, file sections) with a
     /// token budget. Declared in `<repo>/.bn/context.toml`; `ship`,
     /// `compact-restore` and `orient` are built in. Bare `bn context` lists profiles.
     Context {
@@ -49,24 +42,6 @@ pub(crate) enum CmdCoord {
         /// Task to match against effective workflow names, descriptions, triggers and keywords.
         #[arg(value_name = "TASK", num_args = 0..)]
         task: Vec<String>,
-    },
-    /// Remove a branch-note item outright, by id (t3, b1, w2, …) or text substring. Unlike `done`
-    /// it records no completion: for an item that should never have been added.
-    Drop {
-        #[arg(required = true)]
-        query: Vec<String>,
-    },
-    /// Reopen a checked-off todo or done-when criterion, by id or substring of a done item.
-    Undone {
-        #[arg(required = true)]
-        query: Vec<String>,
-    },
-    /// Replace a branch-note item's text, keeping its id, dates and state:
-    /// bn reword <id|substring> <new text...> (quote a multi-word substring).
-    Reword {
-        query: String,
-        #[arg(required = true)]
-        text: Vec<String>,
     },
 }
 
@@ -113,73 +88,6 @@ pub(crate) enum ContextCmd {
     },
 }
 
-#[derive(Subcommand, Debug)]
-pub(crate) enum CompactCmd {
-    /// Every live agent's context-window use and what to do about it. Read-only.
-    Plan {
-        /// Only agents at or above this percent.
-        #[arg(long)]
-        threshold: Option<u8>,
-    },
-    /// Write this branch's recap (`RECAP.md`): your own words, then a state block bn composes
-    /// from the note. Write it at a boundary — before a compaction, a handover, a long break.
-    Recap {
-        /// What you know that the note doesn't: where you are, what you were about to do, what
-        /// you suspect. Several words are joined.
-        #[arg(num_args = 0..)]
-        text: Vec<String>,
-        /// Read the words from stdin instead.
-        #[arg(long)]
-        stdin: bool,
-        #[command(flatten)]
-        target: CompactTarget,
-    },
-    /// Prepare for a compaction: write the recap and a handoff (keeping earlier author notes),
-    /// and log it. `--dry-run` shows the recap and writes nothing. Wired as the PreCompact hook.
-    Prep {
-        /// Your own words for the recap.
-        #[arg(long)]
-        text: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
-        /// Called by a harness hook: read its JSON from stdin and never fail.
-        #[arg(long, hide = true)]
-        hook: bool,
-        #[command(flatten)]
-        target: CompactTarget,
-    },
-    /// After a compaction: print what the note, the recap and the proof say, so the session checks
-    /// its beliefs against them before acting, and log how it came back. Wired as the
-    /// SessionStart hook for `compact`.
-    Audit {
-        #[arg(long, hide = true)]
-        hook: bool,
-        #[command(flatten)]
-        target: CompactTarget,
-    },
-    /// Compact another live Claude agent deliberately: prep its recap and handoff, type
-    /// `/compact` into its pane, and wait for it to come back and audit itself. Reports the
-    /// honest outcome, or `waiting` if it hasn't come back in time.
-    Run {
-        /// The agent: `repo:branch`.
-        seat: String,
-        /// What the compaction should keep in focus (passed to `/compact`).
-        #[arg(long)]
-        focus: Option<String>,
-        /// Seconds to wait for the restore.
-        #[arg(long, default_value_t = 300)]
-        timeout: u64,
-        /// Say what would happen; do nothing.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// This branch's compaction log: each prep and restore, with its outcome.
-    Log {
-        #[command(flatten)]
-        target: CompactTarget,
-    },
-}
-
 /// Another branch's note, instead of this worktree's.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub(crate) struct CompactTarget {
@@ -192,7 +100,7 @@ pub(crate) struct CompactTarget {
 /// Which branch a proof command acts on, and as whom.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub(crate) struct ProofTarget {
-    /// Another branch's note (with --branch) instead of this worktree's.
+    /// Another repo's execution branch (with --branch) instead of this worktree's.
     #[arg(long)]
     pub(crate) repo: Option<String>,
     #[arg(long)]

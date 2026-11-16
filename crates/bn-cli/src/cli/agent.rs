@@ -27,19 +27,7 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         reingest: bool,
     },
-    /// Mine this branch's recorded sessions into proposed note lines — a progress bullet, and
-    /// (for code-changing sessions) a decision stub + follow-up todo — for work that never
-    /// landed in the note. Propose-only, mirroring `bn sync`: `--json` emits and writes nothing;
-    /// otherwise each line is confirmed (or `--yes`-applied). bn agent digest.
-    Digest {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        /// Apply every proposed line without prompting.
-        #[arg(long)]
-        yes: bool,
-    },
+
     /// Live-agent fleet: every *running* Claude session with its health (active / idle / stuck),
     /// flagging any idle past `--stuck` minutes. The supervisor pass behind the FLEET cockpit
     /// panel and `--json`. bn agent supervise.
@@ -92,7 +80,7 @@ pub(crate) enum AgentCmd {
     },
     /// Recover an interrupted ship turn: a worktree with commits ahead of base but no PR (its agent
     /// died before pushing). Dry-run by default (reports candidates); `--yes` pushes the branch and
-    /// opens a PR (`gh pr create --fill`), recording it on the note. Targets the current worktree,
+    /// opens a PR (`gh pr create --fill`), recording it on the governing task. Targets the current worktree,
     /// `--repo/--branch`, or `--all` (sweep every worktree). bn agent recover.
     Recover {
         #[arg(long)]
@@ -112,7 +100,7 @@ pub(crate) enum AgentCmd {
     /// Signal completion back to the orchestrator (the agent runs this when it finishes) — the
     /// event-driven push. Raises a durable, keyed attention item (source `agent`, carrying repo/
     /// branch/PR link) that surfaces in `bn next` / the orchestrator's attention read, sets the
-    /// window's `@bn_agent done` badge, and records it in the note. `--notify` also fires a desktop
+    /// window's `@bn_agent done` badge, and records the execution outcome. `--notify` also fires a desktop
     /// toast. Run inside the worktree, or target it with --repo/--branch. bn agent done.
     Done {
         /// One-line summary of what was accomplished.
@@ -125,7 +113,7 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         notify: bool,
         /// This finding is report-only — a recommendation or "nothing to fix", NOT a code change to
-        /// ship. Records the report-only outcome in the branch note.
+        /// ship. Records a report-only execution outcome.
         #[arg(long)]
         report_only: bool,
         /// Report terminal worker failure instead of successful completion.
@@ -137,12 +125,12 @@ pub(crate) enum AgentCmd {
         branch: Option<String>,
     },
     /// Steer a running agent with a message and get its reply. Default: the reliable `-p --resume`
-    /// channel (harness + session id from the branch note) — works for both harnesses even against a
+    /// channel (harness + session id from recorded launch state) — works for both harnesses even against a
     /// live session, and returns the agent's answer. `--keys` instead pastes into the live tmux
     /// window and submits with a raw CR, verifying the pane took it (visible there; use when the
     /// agent is idle). `<target>` is `repo:branch`. bn agent send.
     Send {
-        /// `repo:branch` of the agent (its note holds the recorded session id).
+        /// `repo:branch` of the agent (its launch state holds the recorded session id).
         target: String,
         /// The message to send.
         msg: String,
@@ -215,7 +203,7 @@ pub(crate) enum AgentCmd {
     RelaunchRepo {
         /// The repo whose agents to restart — a bare repo name, not `repo:branch`.
         repo: String,
-        /// Start FRESH sessions seeded from each branch note's handoff instead of resuming the
+        /// Start FRESH sessions seeded from task and execution context instead of resuming the
         /// recorded transcripts. For a repo whose agents' context is the problem.
         #[arg(long)]
         hard: bool,
@@ -230,13 +218,13 @@ pub(crate) enum AgentCmd {
     /// then the harness is respawned in the checkout git says the branch is really in — never the
     /// conventional `<worktree_dir>/<repo>/<branch>`, which is wrong for every pooled slot. By
     /// default the new session RESUMES the old transcript; `--hard` starts a fresh one seeded from
-    /// the branch note's handoff. The warm pool slot is kept (that is what `kill` frees), and a
+    /// task and execution context. The warm pool slot is kept (that is what `kill` frees), and a
     /// relaunch that could not happen exits non-zero rather than reporting success.
     /// bn agent relaunch <target> [--hard] [--harness claude|copilot].
     Relaunch {
         /// `repo:branch` of the agent — the `target` from `bn agent live`.
         target: String,
-        /// Start a FRESH session seeded from the branch note's handoff instead of resuming the
+        /// Start a FRESH session seeded from task and execution context instead of resuming the
         /// recorded transcript. For an agent whose context is the problem.
         #[arg(long)]
         hard: bool,
@@ -333,7 +321,7 @@ pub(crate) enum AgentCmd {
         limit: usize,
     },
     /// Give a running agent a **standing** instruction: recorded under `## Directives` in its
-    /// branch note *and* delivered to the live session. The note copy is the point — a directive
+    /// task document *and* delivered to the live session. The durable copy is the point — a directive
     /// is re-seeded into a `bn agent relaunch --hard` and into a fresh dispatch, so resetting an
     /// agent's context no longer discards what you told it.
     ///
@@ -349,7 +337,7 @@ pub(crate) enum AgentCmd {
         /// List the target's standing directives instead of adding one.
         #[arg(long)]
         list: bool,
-        /// Drop a directive by its note id (`i1`).
+        /// Drop a directive by the id shown by --list.
         #[arg(long, value_name = "ID")]
         drop: Option<String>,
     },
@@ -365,11 +353,7 @@ pub(crate) enum AgentCmd {
         #[arg(long, default_value_t = 40)]
         limit: usize,
     },
-    /// Claude Code SessionStart hook: point this worktree's auto-memory at a per-worktree
-    /// `.claude/memory` (written idempotently to the gitignored `.claude/settings.local.json`,
-    /// since the checked-in settings ignore `autoMemoryDirectory`), then print `bn handoff read`
-    /// to orient the session. Replaces `scripts/wt-memory.sh`. Best-effort, quiet on no note.
-    MemoryHook,
+
     /// Launch an AI coding agent in the current directory, resuming this directory's recorded
     /// session if one exists, else starting fresh — the single home of the resume-or-fresh rule
     /// (tmux keybinds, `bn dispatch`, and a plain `cd <wt> && bn agent launch` all behave
@@ -404,7 +388,7 @@ pub(crate) enum AgentCmd {
         resume_session: Option<String>,
         /// Let the agent reach this directory too, on top of the one it is launched in.
         /// Repeatable. An agent is otherwise confined to its launch directory (plus its own
-        /// branch-note directory), so a search cannot wander into `~/Documents`.
+        /// task and execution artifact directories), so a search cannot wander into `~/Documents`.
         #[arg(long = "add-dir", value_name = "DIR")]
         add_dir: Vec<String>,
         /// Run the seed non-interactively (`-p` instead of copilot's `-i` or claude's opening

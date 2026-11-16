@@ -17,14 +17,14 @@ Work in fresh context and follow the Plan workflow below. Do not write product c
 
 ## Plan artifact
 
-Write the plan Markdown directly to this bn-owned draft file, not to branch-note todo/done-when
+Write the plan Markdown directly to this Workspan-owned draft file, not to a duplicate task
 items:
 
 ```text
 {{plan_file}}
 ```
 
-Keep `note.md` as an index/status file only.
+Keep actionable progress on the governing task; Entire owns session history.
 
 Before finishing, record one workflow reflection with
 `bn reflect "skill:plan — <what worked or what to change>"`.

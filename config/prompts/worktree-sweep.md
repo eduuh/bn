@@ -8,7 +8,7 @@ arguments:
   - { name: dry_run, description: "If set (true/yes/1), classify and report only — remove nothing.", required: false }
 ---
 One rule decides every call: **a worktree is disposable only when its work is provably somewhere
-else** — merged into main, pushed to a PR, or written into the branch note. Uncommitted changes and
+else** — merged into main, pushed to a PR, or captured in the assigned task's research artifact. Uncommitted changes and
 unpushed commits are not somewhere else. Where the evidence is missing, you keep the worktree and
 say why. A sweep that loses an hour of someone's work is worse than no sweep at all.
 

@@ -40,11 +40,11 @@ pub(crate) fn launch_add_dirs(cfg: &Config, cwd: &Path, extra: Vec<String>) -> V
         }
     };
     if let Ok(ctx) = bn_core::resolver::resolve(cfg, cwd) {
-        let note_dir = cfg.note_dir(&ctx);
+        let artifact_dir = cfg.artifact_dir(&ctx);
         // Only offer a directory that exists: `--add-dir` on a missing path is an error, and a
         // branch whose note was never created has nothing there to reach anyway.
-        if note_dir.is_dir() {
-            push(note_dir.to_string_lossy().to_string());
+        if artifact_dir.is_dir() {
+            push(artifact_dir.to_string_lossy().to_string());
         }
     }
     for dir in extra {

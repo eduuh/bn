@@ -4,7 +4,7 @@
 //! different names while pointing at the same checkout. This registry keys ownership by normalized
 //! repo/branch plus the canonical worktree path, and uses a required file lock for every mutation.
 
-use crate::store::FileLock;
+use crate::fs::FileLock;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -316,7 +316,7 @@ pub fn load_agent_leases(path: &Path) -> std::io::Result<AgentLeaseRegistry> {
 }
 
 fn save_agent_leases(path: &Path, registry: &AgentLeaseRegistry) -> std::io::Result<()> {
-    crate::store::save_json_atomic(path, registry)
+    crate::fs::save_json_atomic(path, registry)
 }
 
 fn is_authoritative(lease: &AgentLease, now: i64, is_live: &impl Fn(&AgentLease) -> bool) -> bool {

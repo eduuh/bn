@@ -24,7 +24,7 @@
 use crate::events::{read_all, read_events_across, Event};
 use crate::metrics::CloseOut;
 use crate::resolver::Config;
-use crate::{daily, focus, metrics, reports, rollups, track, util};
+use crate::{daily, focus, metrics, reports, track, util};
 use serde::{Deserialize, Serialize};
 
 const DAY: i64 = 86_400;
@@ -353,7 +353,7 @@ pub fn set_baseline(cfg: &Config, ins: &Insights) -> std::io::Result<std::path::
         bn_time_ratio: ins.scoreboard.bn_time.ratio,
     };
     let path = cfg.scoreboard_baseline_path();
-    crate::store::save_json_atomic(&path, &baseline)?;
+    crate::fs::save_json_atomic(&path, &baseline)?;
     Ok(path)
 }
 
@@ -458,9 +458,14 @@ fn compute_ship_days(evs: &[Event], boundary: i64) -> ShipDays {
 /// Age distribution of every open todo across all active local branch notes, as of `today`.
 fn compute_todo_age(cfg: &Config, today: &str) -> TodoAge {
     let mut ages: Vec<i64> = Vec::new();
-    for bn in rollups::all_notes(cfg) {
-        for t in bn.note.front.todos.iter().filter(|t| t.is_open_todo()) {
-            ages.push(util::days_since(&t.created, today).unwrap_or(0).max(0));
+    let store = crate::task_store::task_store(cfg);
+    if let Ok(file) = store.load() {
+        for task in file.tasks().filter(|task| task.is_open(today)) {
+            ages.push(
+                util::days_since(task.created.as_deref().unwrap_or(today), today)
+                    .unwrap_or(0)
+                    .max(0),
+            );
         }
     }
     ages.sort_unstable();

@@ -25,11 +25,7 @@ pub struct Manifest {
 /// `compact-restore` is what a session reads coming back from a compaction.
 pub const BUILTIN_PROFILES: &[(&str, &[&str], usize)] = &[
     ("ship", &["global-refs", "ref-index", "directives"], 4000),
-    (
-        "compact-restore",
-        &["directives", "recap", "proof", "handoff"],
-        8000,
-    ),
+    ("compact-restore", &["directives", "goal", "proof"], 8000),
     (
         "orient",
         &["directives", "goal", "proof", "ref-index"],

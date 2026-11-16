@@ -4,16 +4,6 @@ mod decompose;
 
 pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
     match action {
-        CmdMisc::Reset { force } => {
-            if !wt::reset(cfg, force) {
-                std::process::exit(1);
-            }
-        }
-        CmdMisc::Rename { new_branch } => {
-            if !wt::rename(cfg, &new_branch) {
-                std::process::exit(1);
-            }
-        }
         CmdMisc::Build {
             json: build_json,
             name,
@@ -224,17 +214,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 }
             }
         }
-        CmdMisc::Clean { all } => {
-            if all {
-                emit_clean_all(cfg, json);
-            } else {
-                let ctx = resolve_or_exit(cfg);
-                emit_clean(cfg, &ctx, json);
-            }
-        }
-        CmdMisc::Prune => emit_prune(cfg, json),
-        CmdMisc::Stale { days } => emit_stale(cfg, days, json),
-        CmdMisc::Archive { days, dry_run } => emit_archive(cfg, days, dry_run, json),
         CmdMisc::Completion { shell } => {
             let mut cmd = crate::regroup::command();
             let name = cmd.get_name().to_string();

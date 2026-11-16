@@ -526,7 +526,7 @@ install_agent_tools() {
   done
   # Install the upstream public `lavish` agent-skill (Agent Skills format, agentskills.io) so
   # harnesses learn to reach for Lavish on plan/diagram/report tasks — it pairs with bn's own
-  # `lavish` prompt, which distills the visual plan into the branch note. Global (-g →
+  # plan workflow, which distills the visual pass into an executable plan artifact. Global (-g →
   # ~/.claude/skills) to cover every repo; best-effort and fed no stdin so an interactive prompt
   # can't hang the installer. The skill runs `npx -y lavish-axi` on demand — no extra npm install
   # beyond the CLI above.
@@ -584,7 +584,7 @@ echo "             'bn doctor' warns while the wrappers are missing, inactive, o
 register_mcp() {
   command -v jq >/dev/null 2>&1 || { echo "Skipped global MCP registration (jq not found)."; return; }
   local tmp
-  local tools='["bn_add","bn_done","bn_pr","bn_goal","bn_cat","bn_context","bn_status","bn_sync","bn_handoff_write","bn_handoff_read"]'
+  local tools='["bn_cmd","bn_links_search","bn_links_add","bn_ref","bn_ref_append"]'
 
   # Spawn bn by ABSOLUTE path, never the bare name. A GUI-launched client (Claude Desktop, VS Code
   # from the Dock) inherits none of the shell PATH — its PATH is /usr/bin:/bin:/usr/sbin:/sbin, so
@@ -679,8 +679,7 @@ register_mcp() {
   # `mcpServers` key. Only register when it is actually installed.
   #
   # Caveat: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd is `/`, so the
-  # branch-note *tools* report "no branch scope" there. The skill *prompts* still work (seeded from
-  # the global tiers, not the worktree). Branch-note tools require a client launched in a worktree.
+  # repo-scoped tools require a worktree there. The skill prompts still work from global tiers.
   local desktop_dir="$HOME/Library/Application Support/Claude"
   [ -d "$desktop_dir" ] || desktop_dir="$HOME/.config/Claude"   # Linux
   if [ -d "$desktop_dir" ]; then

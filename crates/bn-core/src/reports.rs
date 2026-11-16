@@ -3,9 +3,9 @@
 //! throughput from the event log (`crate::metrics`); builds typed structs the CLI/MCP
 //! render. No printing here beyond the text-render helpers.
 
+use crate::daily::Item;
 use crate::daily::{self, ScheduledItem};
 use crate::metrics;
-use crate::model::Item;
 use crate::resolver::Config;
 use crate::rollups;
 use crate::runner::CommandRunner;
@@ -486,13 +486,6 @@ impl WrapDigest {
             && self.open_todos.is_empty()
             && self.carry_forward.is_empty()
     }
-}
-
-/// The current branch note's last-activity date — the marker the wrap digest dates "un-noted
-/// commits" against. Thin public wrapper over [`crate::doctor::last_activity`] so the CLI can
-/// supply it to [`wrap`] without reaching into `doctor`.
-pub fn note_last_activity(note: &crate::model::Note) -> String {
-    crate::doctor::last_activity(note)
 }
 
 /// Build the end-of-day wrap digest as of `today`, reading git/gh through `runner` (so it's

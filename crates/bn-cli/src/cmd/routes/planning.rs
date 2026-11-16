@@ -3,10 +3,6 @@ use crate::*;
 pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
     match action {
         CmdPlanning::Plan { action } => crate::cmd::plan::emit_plan(cfg, action, json),
-        CmdPlanning::Files => {
-            let ctx = resolve_or_exit(cfg);
-            emit_files(commands::list_files(cfg, &ctx), json);
-        }
         CmdPlanning::ManagedRepos { dir } => {
             if dir {
                 println!("{}", resolver::managed_repos_dir().display());
@@ -36,7 +32,7 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                     Envelope::success("worktrees", payload::worktrees_data(&wts)).to_json()
                 );
             } else if wts.is_empty() {
-                println!("No active branch notes");
+                println!("No active task worktrees");
             } else {
                 // Render natively (machine-subtree layout) rather than delegating to the
                 // bash fallback, which still resolves the old machine-less paths.
@@ -49,9 +45,6 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 }
             }
         }
-        CmdPlanning::Todo => emit_todo(cfg, json),
-        CmdPlanning::List => emit_list(cfg, json),
-        CmdPlanning::Summary => emit_summary(cfg, json),
         CmdPlanning::Daily { action, date } => emit_daily(cfg, action, date, json),
         CmdPlanning::Task { action, all, repo } => match action {
             None | Some(TaskCmd::List) => emit_task_list(
@@ -136,7 +129,7 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 source,
                 branch,
                 replace,
-            }) => emit_task_ingest(cfg, &source, branch.as_deref(), replace, json),
+            }) => emit_task_ingest(cfg, &source, branch.as_deref(), repo.as_deref(), replace, json),
         },
     }
 }

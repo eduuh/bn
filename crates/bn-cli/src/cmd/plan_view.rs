@@ -158,7 +158,7 @@ pub(crate) fn run(cfg: &Config, ctx: &Resolved, host: Option<&str>, port: Option
             std::process::exit(0);
         }
         (None, None) => {
-            let Some(file) = newest_html(&cfg.note_dir(ctx)) else {
+            let Some(file) = newest_html(&cfg.artifact_dir(ctx)) else {
                 fail("no plan HTML in this branch's note folder yet");
             };
             println!("{}", file.display());

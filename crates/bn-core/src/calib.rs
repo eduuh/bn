@@ -15,10 +15,10 @@
 //!   (`overall`, `repo:<repo>`, `tag:<tag>`) with a sample count `n` so thin buckets are visibly
 //!   untrustworthy.
 
-use crate::model::Item;
+use crate::daily::Item;
 use crate::resolver::Config;
 use crate::track::{self, Interval};
-use crate::{focus, rollups, util};
+use crate::{focus, util};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -227,24 +227,8 @@ fn round2(x: f64) -> f64 {
 /// note's tags; each calibrated daily goal contributes to `overall`.
 pub fn report(cfg: &Config) -> Report {
     let mut overall: Vec<f64> = Vec::new();
-    let mut by_bucket: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let by_bucket: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let sizes = &cfg.coarse_sizes;
-
-    for bn in rollups::machine_notes(cfg, false) {
-        for todo in &bn.note.front.todos {
-            let Some(r) = ratio(sizes, todo) else {
-                continue;
-            };
-            overall.push(r);
-            by_bucket
-                .entry(format!("repo:{}", bn.repo))
-                .or_default()
-                .push(r);
-            for tag in &bn.note.front.tags {
-                by_bucket.entry(format!("tag:{tag}")).or_default().push(r);
-            }
-        }
-    }
 
     for daily in read_all_daily(cfg) {
         for goal in &daily.front.goals {

@@ -155,20 +155,10 @@ pub(crate) fn launch_sub_investigator(
             return false;
         }
     };
-    let _ = commands::add(
-        cfg,
-        ctx,
-        "collab",
-        &format!("agent-session: copilot {sid}"),
-        Some(&format!("agent-session: copilot {sid}")),
-        &today(),
-    );
-    bn_core::cost::attribute(
-        &sid,
-        bn_core::cost::WorkClass::Research,
-        &ctx.repo,
-        &ctx.branch,
-    );
+    crate::cmd::agent::record_launched_session(cfg, crate::cmd::agent::LaunchedSession {
+        ctx, harness: "copilot", session_id: &sid, worktree: &wt_s, host: None,
+        work_class: bn_core::cost::WorkClass::Research, task_name: None, controller_id: None,
+    });
     let launched = if quiet {
         wt::open_worktree_window_cmd_quiet(
             &ctx.repo,
@@ -229,9 +219,7 @@ pub(crate) fn launch_plan_agent(
         Some(&envelope_args),
     )
     .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}")));
-    if let Ok(note) = bn_core::store::read(&cfg.note_file(ctx)) {
-        append_plan_gate_seed(cfg, ctx, &wt_path, &sid, &plan_path_s, &note, &mut seed);
-    }
+    append_plan_gate_seed(cfg, ctx, &wt_path, &sid, &plan_path_s, &mut seed);
     let Some(seed_file) = wt::prompt_to_file("pipeline-plan", &ctx.repo, &ctx.branch, &seed) else {
         return false;
     };
@@ -265,20 +253,10 @@ pub(crate) fn launch_plan_agent(
             return false;
         }
     };
-    let _ = commands::add(
-        cfg,
-        ctx,
-        "collab",
-        &format!("agent-session: copilot {sid}"),
-        Some(&format!("agent-session: copilot {sid}")),
-        &today(),
-    );
-    bn_core::cost::attribute(
-        &sid,
-        bn_core::cost::WorkClass::Research,
-        &ctx.repo,
-        &ctx.branch,
-    );
+    crate::cmd::agent::record_launched_session(cfg, crate::cmd::agent::LaunchedSession {
+        ctx, harness: "copilot", session_id: &sid, worktree: &wt_path.to_string_lossy(), host: None,
+        work_class: bn_core::cost::WorkClass::Research, task_name: None, controller_id: None,
+    });
     let launched = if quiet {
         wt::open_worktree_window_cmd_quiet(
             &ctx.repo,

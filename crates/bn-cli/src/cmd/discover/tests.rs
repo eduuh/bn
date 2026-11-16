@@ -116,40 +116,22 @@ fn discover_task_selects_relevant_effective_workflows_and_real_commands() {
     assert_eq!(snapshot(dir.path()), before);
     assert!(!cfg.personal_root.exists());
     let empty = discover(&cfg, &repo, "").unwrap();
-    assert_eq!(empty["context"]["note_exists"], false);
-    assert_eq!(
-        empty["context"]["counts"],
-        json!({"open_todos": 0, "blockers": 0})
-    );
-    assert_eq!(empty["commands"][0], "bn goal '<goal>'");
+    assert!(empty["context"]["task_id"].is_null());
+    assert_eq!(empty["commands"][0], "bn task list");
     assert_eq!(snapshot(dir.path()), before);
 }
 
 #[test]
-fn discover_orients_existing_note_without_writing_or_guessing_from_goal() {
+fn discover_orients_existing_task_without_writing_or_guessing_from_goal() {
     let _lock = env_lock();
     let (dir, cfg, _env) = fixture();
     let repo = repo(dir.path());
     let ctx = resolver::resolve(&cfg, &repo).unwrap();
-    let note_path = cfg.note_file(&ctx);
-    std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &note_path,
-        "---\nrepo: project\nbranch: feature\ncreated: 2026-10-08\nstatus: active\ntodos:\n\
-         - {id: t1, text: Fix crash, created: 2026-10-08, done: false}\n\
-         - {id: t2, text: Completed, created: 2026-10-08, done: true}\n\
-         blockers:\n- {id: b1, text: Await access, created: 2026-10-08}\n\
-         ---\n## Goal\n\nFix a crash\n",
-    )
-    .unwrap();
+    let task = bn_core::task_store::capture(&cfg, "Fix a crash", Some(ctx.rb()), "test").unwrap();
     let before = snapshot(dir.path());
     let data = discover(&cfg, &repo, "").unwrap();
-    assert_eq!(data["context"]["note_exists"], true);
+    assert_eq!(data["context"]["task_id"], task.id().unwrap());
     assert_eq!(data["context"]["goal"], "Fix a crash");
-    assert_eq!(data["context"]["counts"]["open_todos"], 1);
-    assert_eq!(data["context"]["counts"]["blockers"], 1);
-    assert_eq!(data["context"]["todos"][0]["id"], "t1");
-    assert_eq!(data["context"]["blockers"][0]["id"], "b1");
     assert!(data["context"].get("help").is_none());
     assert_eq!(data["workflows"], json!([]));
     assert_eq!(snapshot(dir.path()), before);
@@ -263,18 +245,17 @@ fn discover_cli_accepts_multiword_task_and_json_anywhere() {
 }
 
 #[test]
-fn discover_reports_an_unreadable_note_instead_of_claiming_it_is_missing() {
+fn discover_never_reads_or_repairs_malformed_historical_notes() {
     let _lock = env_lock();
     let (dir, cfg, _env) = fixture();
     let repo = repo(dir.path());
     let ctx = resolver::resolve(&cfg, &repo).unwrap();
-    let note_path = cfg.note_file(&ctx);
+    let note_path = cfg.artifact_dir(&ctx).join("note.md");
     std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
     std::fs::write(&note_path, "---\ntodos: [invalid yaml\n---\n").unwrap();
     let before = snapshot(dir.path());
-    assert!(discover(&cfg, &repo, "")
-        .unwrap_err()
-        .contains("cannot read branch note"));
+    let data = discover(&cfg, &repo, "").unwrap();
+    assert!(data["context"]["task_id"].is_null());
     assert_eq!(snapshot(dir.path()), before);
 }
 
