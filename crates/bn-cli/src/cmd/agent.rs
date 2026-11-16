@@ -1284,35 +1284,12 @@ pub(crate) fn emit_agent_launch(
         // The agent runs on `host`, and its own bn decides resume-or-fresh and placement there, so
         // only what the caller asked for travels. It is started in a tmux window on that machine,
         // then attached from here, and survives the connection (remote.rs).
-        let mut launch: Vec<String> = ["bn", "agent", "launch", harness.bin()].map(String::from).into();
-        if let Some(s) = &seed {
-            launch.extend(["--seed".to_string(), s.clone()]);
-        }
-        if yolo {
-            launch.push("--yolo".to_string());
-        }
-        if fresh {
-            launch.push("--fresh".to_string());
-        }
-        for (flag, value) in [("--session", &session), ("--resume-session", &resume_session)] {
-            if let Some(v) = value {
-                launch.extend([flag.to_string(), v.clone()]);
-            }
-        }
-        for dir in &add_dirs {
-            launch.extend(["--add-dir".to_string(), dir.clone()]);
-        }
-        if one_shot {
-            launch.push("--one-shot".to_string());
-        }
-        if !passthrough.is_empty() {
-            launch.push("--".to_string());
-            launch.extend(passthrough);
-        }
         let sid = session.clone().unwrap_or_else(gen_uuid);
-        if session.is_none() {
-            launch.extend(["--session".to_string(), sid.clone()]);
-        }
+        let plan = LaunchPlan {
+            seed, yolo_force: yolo, fresh, session, resume_session,
+            add_dirs, one_shot, passthrough,
+        };
+        let launch = remote::launch_args(harness, &plan, &sid);
         remote::start(cfg, host, &ctx.repo, &ctx.branch, &launch);
         record_launched_session(cfg, LaunchedSession {
             ctx: &ctx, harness: harness.bin(), session_id: &sid, worktree: &cwd,
