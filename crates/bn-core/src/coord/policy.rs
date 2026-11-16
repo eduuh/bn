@@ -37,7 +37,7 @@ pub fn decide(wd: &Watchdog, f: &Facts) -> Decision {
             None => Decision::Unavailable("no running session for this seat".into()),
             Some(idle) if idle >= idle_need => Decision::Fire(text(
                 "keepalive: you have been quiet a while — still on it? If you are blocked, say so \
-                 with `bn add blocker`.",
+                 in the governing task context.",
             )),
             Some(idle) => Decision::Skip(format!("active {idle}s ago")),
         },

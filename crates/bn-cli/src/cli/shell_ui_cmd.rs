@@ -16,9 +16,8 @@ pub(crate) enum CmdShellUi {
         #[command(subcommand)]
         action: Box<crate::edit::EditCmd>,
     },
-    /// One-line status badge for the tmux status bar (replaces branch-note-status.sh).
-    /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; prints
-    /// nothing when there's no note or it's closed.
+    /// One-line task/execution status badge for the tmux status bar.
+    /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd.
     TmuxStatus { path: Option<String> },
     /// Report tmux sessions that name no repository on this machine, and with `--force` kill them.
     /// bn opens a session per repo and a window per worktree; anything else is left over from an
@@ -93,12 +92,12 @@ pub(crate) enum CmdShellUi {
     /// plus a mock of the two tmux status rows. If a row shows tofu/blanks, your font is
     /// missing the glyph. The mirrors listed in bn-core/src/glyph.rs must match this set.
     Glyphs,
-    /// Push the current note's counts into per-window tmux options (@bn_todos, @bn_blockers)
-    /// so the window list can decorate cheaply. Runs automatically after `bn add` / `bn done`
-    /// inside tmux. Decorates the window bn ran in; `bn tmux-reconcile` sweeps them all.
+    /// Push the current task's counts into per-window tmux options (@bn_todos, @bn_blockers)
+    /// so the window list can decorate cheaply. Decorates the window bn ran in;
+    /// `bn tmux-reconcile` sweeps them all.
     TmuxSync,
     /// Restore the window -> worktree link (@bn_repo/@bn_branch) across every window and refresh
-    /// their note badges: window options do not survive a tmux-resurrect restore, and badges are
+    /// their task badges: window options do not survive a tmux-resurrect restore, and badges are
     /// otherwise written only to the window bn ran in. Stamps only where a window's name agrees
     /// with the branch its pane is on; drift is reported, never guessed. Idempotent.
     TmuxReconcile {

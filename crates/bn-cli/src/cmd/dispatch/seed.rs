@@ -163,7 +163,7 @@ pub(super) fn skill_seed_prompt(
         ("goal", ctx.title.to_string()),
         (
             "source",
-            ctx.url.unwrap_or("(none; use the branch note)").to_string(),
+            ctx.url.unwrap_or("(none; use the task context)").to_string(),
         ),
         ("workflow_name", name.to_string()),
         ("workflow_body", body),
@@ -226,7 +226,7 @@ pub(super) fn pipeline_investigate_seed(
     args.insert("goal".into(), serde_json::Value::String(title.to_string()));
     args.insert(
         "source".into(),
-        serde_json::Value::String(url.unwrap_or("(none; use the branch note)").to_string()),
+        serde_json::Value::String(url.unwrap_or("(none; use the task context)").to_string()),
     );
     args.insert("workflow_body".into(), serde_json::Value::String(body));
     args.insert("cli_map".into(), serde_json::Value::String(cli_map));

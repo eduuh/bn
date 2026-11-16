@@ -24,9 +24,9 @@ pub(crate) enum CmdStaff {
         stuck: i64,
     },
 
-    /// Switch harnesses mid-task without losing context: capture the session you're leaving (a
-    /// live one if it's still running, else the last recorded), write the handoff resume packet,
-    /// and print the orientation plus the command to start the target harness in this worktree.
+    /// Switch harnesses mid-task using task and execution context: record outgoing session
+    /// attribution and print the orientation plus the command to start the target harness in
+    /// this worktree. Entire owns prior session history.
     /// Run it when you hit a limit in one harness and want to finish in another. `bn switch
     /// copilot` / `bn switch claude`; bare `bn switch` picks the other harness from the one
     /// currently driving bn.
@@ -34,13 +34,13 @@ pub(crate) enum CmdStaff {
         /// Target harness to resume in: claude | copilot. Omit to pick the opposite of the
         /// harness currently driving bn (falling back to the review harness, else copilot).
         harness: Option<String>,
-        /// Override the first prompt handed to the target harness (default: load the handoff
-        /// packet, then continue the priority queue).
+        /// Override the first prompt handed to the target harness (default: read task and
+        /// execution state, then continue the work).
         #[arg(long)]
         prompt: Option<String>,
         /// Perform the swap instead of printing the launch command: grant the target harness
         /// folder trust, then relaunch it shell-backed in the worktree's tmux window, seeded to
-        /// read the handoff. Falls back to printing when no tmux window is found.
+        /// read task and execution context. Falls back to printing when no tmux window is found.
         #[arg(long)]
         in_place: bool,
         /// Why you're switching, recorded to the metrics log so `bn metrics` can tell a
@@ -101,7 +101,7 @@ pub(crate) enum CmdStaff {
     Cron {
         #[command(subcommand)]
         action: Option<CronCmd>,
-        /// Target a specific note's jobs (else resolved from the current directory).
+        /// Target a specific repo's jobs (else resolved from the current directory).
         #[arg(long, global = true)]
         repo: Option<String>,
         #[arg(long, global = true)]

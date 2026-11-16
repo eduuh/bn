@@ -427,7 +427,7 @@ pub(crate) fn emit_task_pull(
         RepoScope::Any => bn_core::issues::known_repos(cfg),
     };
     if repos.is_empty() {
-        fail("bn task pull: no repos known — set [managed_repos].repos or create a branch note");
+        fail("bn task pull: no repos known — set [managed_repos].repos or clone a managed repo");
     }
 
     let policy = crate::cmd::keep_warm::configured_policy(cfg, low_water);

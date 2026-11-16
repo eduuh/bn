@@ -168,7 +168,7 @@ fn run_with_client<C: ForgeMcpClient>(
                     );
                     let note_result = record_blocker(cfg, &blocker, &dispatch_task.id);
                     let full = match note_result {
-                        Ok(()) => format!("{blocker}; blocker recorded in the current branch note"),
+                        Ok(()) => format!("{blocker}; blocker recorded in the governing task context"),
                         Err(error) => format!("{blocker}; additionally could not record blocker: {error}"),
                     };
                     ForgeRunError::new(COMMAND_DISPATCH, "dispatch_failed_after_claim", full)
@@ -445,7 +445,7 @@ fn short_id(id: &str) -> String {
 
 fn record_blocker(cfg: &Config, text: &str, key: &str) -> Result<(), String> {
     let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default())
-        .map_err(|error| format!("could not resolve current branch note: {error:?}"))?;
+        .map_err(|error| format!("could not resolve current worktree: {error:?}"))?;
     bn_core::task_doc::append_context(cfg, &ctx, "Open questions", text)
         .map_err(|error| error.to_string())?;
     bn_core::attention::add_new(&bn_core::attention::NewAttn {

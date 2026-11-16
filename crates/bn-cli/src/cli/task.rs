@@ -97,7 +97,7 @@ pub(crate) enum TaskCmd {
     },
     /// The files captured with a task — **this is how an agent resolves them**. The doc's
     /// `## Attachments` manifest lists names, never paths: a path is a property of the machine
-    /// that wrote it, and the doc syncs everywhere and moves when the task is picked up. This
+    /// that wrote it, while the task doc syncs across machines independently of branch bindings. This
     /// prints where they actually are, here, now.
     ///
     /// `bn task attach t42` lists them; `--add` captures more; `--rm` drops one.

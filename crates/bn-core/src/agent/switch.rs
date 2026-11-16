@@ -130,7 +130,7 @@ pub fn switch_narrative(
             }
         }
         None => format!(
-            "Switched to {to}. No prior agent session was found on this branch — continue from the note's open work."
+            "Switched to {to}. No prior agent session was found on this branch — continue from the governing task and execution state."
         ),
     };
     if let Some(wc) = wip {

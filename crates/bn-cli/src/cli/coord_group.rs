@@ -14,7 +14,7 @@ pub(crate) enum CmdCoord {
         #[command(subcommand)]
         action: Option<WatchdogCmd>,
     },
-    /// Evidence for this branch's done-when criteria, kept beside its note in `proof/`. A proof
+    /// Evidence for the governing task's done-when criteria, kept in branch-scoped `proof/`. A proof
     /// (`p<N>`) says what was checked, at which commit, by whom; a verdict from someone other
     /// than its author accepts or rejects it; readiness per criterion is derived from both, never
     /// written by hand. `bn verify --for w1` records one for you. Bare `bn proof` shows readiness.
@@ -24,7 +24,7 @@ pub(crate) enum CmdCoord {
     },
 
     /// Context profiles: the standing context a seat is handed, composed from atoms (directives,
-    /// goal, readiness, recap, handoff, reference index or sections, skills, file sections) with a
+    /// goal, proof readiness, reference index or sections, skills, file sections) with a
     /// token budget. Declared in `<repo>/.bn/context.toml`; `ship`,
     /// `compact-restore` and `orient` are built in. Bare `bn context` lists profiles.
     Context {
@@ -100,7 +100,7 @@ pub(crate) struct CompactTarget {
 /// Which branch a proof command acts on, and as whom.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub(crate) struct ProofTarget {
-    /// Another branch's note (with --branch) instead of this worktree's.
+    /// Another repo's execution branch (with --branch) instead of this worktree's.
     #[arg(long)]
     pub(crate) repo: Option<String>,
     #[arg(long)]

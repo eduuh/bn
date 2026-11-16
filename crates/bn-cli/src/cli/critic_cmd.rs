@@ -10,7 +10,7 @@ pub(crate) enum CriticCmd {
     /// Cut a fresh critic worktree off the PR head and launch a `--fresh`, plan-free critic lane
     /// over the branch's diff (base...head) + its done-when criteria.
     Dispatch {
-        /// The execution branch under test (its head is the PR head; its note holds the done-when).
+        /// The execution branch under test (its head is the PR head; its task holds the done-when).
         #[arg(long)]
         branch: String,
         /// Target repo by name (default: the current repo). Lets you critique from anywhere.
@@ -26,7 +26,7 @@ pub(crate) enum CriticCmd {
         /// defaults to copilot; the Claude path is designed but inert until the org toggle flips.
         #[arg(long)]
         agent: Option<String>,
-        /// Don't open a tmux window / launch the agent — just cut the worktree and seed the note.
+        /// Don't open a tmux window / launch the agent — just cut the worktree and prepare execution context.
         #[arg(long)]
         no_tmux: bool,
     },

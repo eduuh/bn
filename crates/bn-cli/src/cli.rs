@@ -64,8 +64,8 @@ pub(crate) enum CmdIntake {
         text: Vec<String>,
     },
     /// Dispatch an item into an isolated worktree — from anywhere: resolve a todo id / issue-PR URL
-    /// / free text, create a worktree off the base branch, seed that branch's note with the item as
-    /// its goal, and open a window on it in the repo's tmux session. The execution end of `bn next`
+    /// / free text, create a worktree off the base branch, prepare task and execution context,
+    /// and open a window on it in the repo's tmux session. The execution end of `bn next`
     /// — what to do → doing it. Target another repo with `--repo <name>` (works outside any repo).
     Dispatch {
         /// A todo id (e.g. t3), an issue/PR URL, or free text describing the work.
@@ -86,7 +86,7 @@ pub(crate) enum CmdIntake {
         /// Don't open a tmux window even when inside tmux.
         #[arg(long)]
         no_tmux: bool,
-        /// Launch an AI agent in the worktree's window, seeded with the note to deliver the task end
+        /// Launch an AI agent in the worktree's window, seeded with task context to deliver the task end
         /// to end in one `ship-solo` session (investigate → implement → review, asking you when
         /// unclear). `--agent` alone lets the launch stage's harness decide (falling back to copilot);
         /// `--agent claude` (aka claudecode) or `--agent copilot` pins it. Opens the repo's tmux session.
@@ -206,7 +206,7 @@ pub(crate) enum CmdIntake {
         one_shot: bool,
     },
     /// Run this worktree's verification gate (all available `build`, `test`, and `lint` jobs) and record the
-    /// PASS/FAIL to the branch note's Progress. Exits non-zero on failure, so an agent can gate
+    /// PASS/FAIL as execution progress. Exits non-zero on failure, so an agent can gate
     /// "done" on it (see `bn dispatch --verify`). Runs in the current worktree, like `bn build`.
     Verify(VerifyCommandArgs),
     /// The no-mistake pre-land gate: rebase this worktree's HEAD onto a freshly-fetched
@@ -301,14 +301,13 @@ pub(crate) enum CmdReview {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdPlanning {
-    /// Manage branch-scoped plan artifacts under the bn note directory.
+    /// Manage branch-scoped plan artifacts in the execution artifact directory.
     Plan {
         #[command(subcommand)]
         action: Option<PlanCmd>,
     },
 
-    /// Active branch notes with their on-disk worktree dirs (JSON for the nvim picker;
-    /// text delegates to the richer bash rollup).
+    /// Active tasks with their branch execution state and on-disk worktree dirs (JSON or text).
     Worktrees,
     /// List the configured managed repos (clone URLs from `[managed_repos]`), one per line —
     /// the refresh-all job clones/refreshes these under the managed root. `--dir` prints that
@@ -319,11 +318,10 @@ pub(crate) enum CmdPlanning {
         dir: bool,
     },
 
-    /// The task list — one global store for every repo (`<work_root>/tasks.txt`, todo.txt
-    /// format). Bare `bn task` shows what's actionable today: work dated today or earlier, plus
+    /// The task list — one configured file or Forge provider for every repo. Bare `bn task`
+    /// shows what's actionable today: work dated today or earlier, plus
     /// anything unscheduled. `--all` is the whole backlog; `--repo .` (or a name) narrows to one
-    /// repo. No git repo needed — it works from anywhere. Distinct from `bn todo` (the
-    /// branch-note rollup), which stays per-branch.
+    /// repo. No git repo needed — it works from anywhere.
     #[command(visible_alias = "t")]
     Task {
         #[command(subcommand)]
@@ -404,9 +402,9 @@ pub(crate) enum CmdInsights {
         #[arg(long)]
         ts: Option<i64>,
     },
-    /// Attention queue: notes with stale/blocked/no-goal unfinished work.
+    /// Attention queue: tasks with stale, blocked, or underspecified unfinished work.
     Doctor {
-        /// Flag notes untouched for at least this many days.
+        /// Flag tasks untouched for at least this many days.
         #[arg(long, default_value_t = bn_core::doctor::DEFAULT_STALE_DAYS)]
         stale_days: i64,
         /// Print a single summary line (for hooks); nothing when all clear.
@@ -424,7 +422,7 @@ pub(crate) enum CmdInsights {
         pick_fields: Vec<String>,
     },
     /// What to do now: one ranked action list folding cron failures, attention items, PRs
-    /// awaiting your review, your stale in-flight PRs, today's open goals, and blocked notes.
+    /// awaiting your review, your stale in-flight PRs, today's open goals, and blocked tasks.
     Next {
         /// How many actions to show (the full ranked list always goes to --json).
         #[arg(long, default_value_t = 5)]
@@ -514,13 +512,13 @@ pub(crate) enum CmdGitPr {
         id: Option<String>,
     },
 
-    /// Append a timestamped bullet to the note's `## Progress` section (SessionEnd hook).
+    /// Append a timestamped progress entry to the governing task's context.
     LogProgress {
         #[arg(required = true)]
         text: Vec<String>,
     },
 
-    /// Git diff stat vs the branch's base, its note's open todos + blockers, and the commit-count
+    /// Git diff stat vs the branch's base, its task state and open questions, and the commit-count
     /// ahead. A quick "where am I" — for this branch, or for any other worktree via `--path` /
     /// `--repo`+`--branch`, which is what makes it usable as a picker preview.
     #[command(visible_alias = "d")]
@@ -528,7 +526,7 @@ pub(crate) enum CmdGitPr {
         /// Describe a different worktree: any directory inside it.
         #[arg(long, value_name = "DIR", conflicts_with_all = ["repo", "branch"])]
         path: Option<std::path::PathBuf>,
-        /// Describe another repo's branch by name (with `--branch`). Resolved through the note
+        /// Describe another repo's branch by name (with `--branch`). Resolved through the task
         /// rollup, so a pooled slot reports its real checkout.
         #[arg(long, requires = "branch")]
         repo: Option<String>,
@@ -570,7 +568,7 @@ pub(crate) enum CmdMisc {
         shell: Shell,
     },
 
-    /// Run a worktree's build script — `<note>/jobs/<name>.sh` resolved branch → repo → global,
+    /// Run a worktree's build script — `<branch-artifacts>/jobs/<name>.sh` resolved branch → repo → global,
     /// with `build` as the default and `--repo`/`--branch` for callers whose cwd can't answer it.
     Build {
         /// Emit a machine-readable JSON envelope instead of human text.
@@ -643,7 +641,7 @@ pub(crate) enum CmdMisc {
     },
     /// Fresh-context CRITIC stage (#649): dispatch a leak-proof critic over a PR's diff, then
     /// drive the execute↔critique loop. `bn critic dispatch --branch <b> --pr <url>` cuts a
-    /// **fresh worktree off the PR head** with a plan-free note and launches a `--fresh` critic
+    /// **fresh worktree off the PR head** with plan-free execution context and launches a `--fresh` critic
     /// lane seeded with ONLY the diff + done-when criteria (never the approved plan) — so the
     /// critic starts with zero prior turns and can't rationalize the code. The critic reports via
     /// `bn critic verdict --pass` / `--fail --findings-file <p>`: PASS advances to shippable; FAIL
@@ -670,7 +668,7 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: crate::cmd::forge_agent::ForgeAgentCmd,
     },
-    /// A task's place in the pipeline. **Bare** `bn pipeline` infers it read-only from notes,
+    /// A task's place in the pipeline. **Bare** `bn pipeline` infers it read-only from task and execution state,
     /// plan reviews, attention, verify/PR markers, and live agents (#657); `--all` lists the
     /// fleet, `--repo`/`--branch` targets another worktree. **Subcommands** drive the explicit
     /// per-worktree stage machine (PIPE-A, EPIC #746) through the observable stages
@@ -700,7 +698,7 @@ pub(crate) enum CmdMisc {
     Version,
     /// Your repo fleet as one addressable thing: the inventory of every bare clone, and a
     /// parallel fan-out that runs one command in all of them and reports each repo's own exit
-    /// code. `bn list` already spans repos on the notes side; this is the git side.
+    /// code. Task views already span repos through the configured provider; this is the git side.
     #[command(args_conflicts_with_subcommands = true)]
     Repos {
         #[command(subcommand)]
@@ -969,7 +967,7 @@ pub(crate) enum McpCmd {
     /// so no per-call scope headers are needed. `--orchestrate` serves the cross-worktree
     /// "friend" toolset instead of the scoped tools.
     Serve {
-        /// Serve the cross-worktree orchestrator tools instead of the scoped branch-note tools.
+        /// Serve the cross-worktree orchestrator tools instead of the scoped command/reference/link tools.
         #[arg(long)]
         orchestrate: bool,
     },
@@ -1252,12 +1250,12 @@ pub(crate) enum AttnCmd {
         #[arg(long)]
         agent: bool,
     },
-    /// Promote a branch todo into a loop-ready attention item (the inverse of `plan`): bn attn
-    /// promote <todo-id> [--mode auto] [--repo R --branch B]. The prompt is seeded from the note's
-    /// goal + todo text (the launched agent reads the full note itself); re-promoting an
+    /// Promote a task into a loop-ready attention item (the inverse of `plan`): bn attn
+    /// promote <todo-id> [--mode auto] [--repo R --branch B]. The prompt names the task and its
+    /// summary; the launched agent reads the task document. Re-promoting an
     /// already-queued todo is a no-op. The todo stays open — the agent checks it off as the work.
     Promote {
-        /// The todo's id in the branch note (e.g. t3).
+        /// The task's id in the configured provider (e.g. t3).
         todo_id: String,
         /// How the item may be actioned: auto (default — feed the loop) | assist | manual.
         #[arg(long, default_value = "auto")]
@@ -1265,7 +1263,7 @@ pub(crate) enum AttnCmd {
         /// info | warn | urgent (default warn).
         #[arg(long, default_value = "warn")]
         severity: String,
-        /// Target note (defaults to the current worktree's).
+        /// Target execution repo (defaults to the current worktree's).
         #[arg(long)]
         repo: Option<String>,
         #[arg(long)]
@@ -1316,11 +1314,11 @@ pub(crate) enum NotifyCmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum QCmd {
-    /// Triage the inbox: route each capture to a branch todo/research, today's goals, the
+    /// Triage the inbox: route each capture to task context, today's goals, the
     /// attention queue, or drop it. Interactive (needs a tty) unless --auto.
     Drain {
-        /// Non-interactive: route only unambiguous captures (hinted at a still-active branch
-        /// note → that branch's todo) and leave the rest.
+        /// Non-interactive: route only unambiguous captures hinted at an active task/worktree
+        /// and leave the rest.
         #[arg(long)]
         auto: bool,
     },

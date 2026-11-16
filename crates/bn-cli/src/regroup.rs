@@ -411,6 +411,32 @@ mod tests {
     }
 
     #[test]
+    fn retained_execution_help_does_not_promise_note_runtime() {
+        for path in [
+            &["dispatch"][..],
+            &["verify"][..],
+            &["task"][..],
+            &["switch"][..],
+            &["agent", "done"][..],
+            &["agent", "send"][..],
+            &["agent", "relaunch"][..],
+            &["agent", "relaunch-repo"][..],
+        ] {
+            let mut args = vec!["bn"];
+            args.extend_from_slice(path);
+            args.push("--help");
+            let help = help_text(&args);
+            for retired in ["branch note", "branch-note", "note's", "handoff", "bn todo"] {
+                assert!(
+                    !help.contains(retired),
+                    "{} help still promises {retired}:\n{help}",
+                    path.join(" ")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn removed_scout_entry_points_are_rejected() {
         let err = command()
             .try_get_matches_from(["bn", "dispatch", "work", "--scout"])

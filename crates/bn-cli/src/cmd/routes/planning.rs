@@ -32,7 +32,7 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                     Envelope::success("worktrees", payload::worktrees_data(&wts)).to_json()
                 );
             } else if wts.is_empty() {
-                println!("No active branch notes");
+                println!("No active task worktrees");
             } else {
                 // Render natively (machine-subtree layout) rather than delegating to the
                 // bash fallback, which still resolves the old machine-less paths.

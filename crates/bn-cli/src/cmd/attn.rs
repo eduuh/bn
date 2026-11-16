@@ -753,7 +753,7 @@ pub(crate) fn emit_attn_start(cfg: &Config, id: &str, agent: bool, as_json: bool
         match (&repo, &branch) {
             (Some(repo), Some(branch)) => fail(&format!(
                 "bn attn start: couldn't open a worktree for {repo}/{branch} \
-                 (bare repo or branch note missing locally?)"
+                 (bare repo or branch missing locally?)"
             )),
             _ => fail(
                 "bn attn start: item has no repo/branch; enhance or assign it before starting",
