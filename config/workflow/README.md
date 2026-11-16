@@ -31,14 +31,14 @@ A codespace is treated as a remote worktree of the same `session = repo`,
 `window = branch` model: it shows up in the picker (inside its repo's worktree list
 if cloned locally, else as a top-level `(codespace)` row), and selecting it opens a
 `<branch> ☁` window that `gh cs ssh`'s into the codespace and attaches its
-per-branch tmux session — so the same `workspan` `<repo>/<branch>` note serves both the
-local worktree and the codespace. Needs `gh`; degrades silently without it. See
+per-branch tmux session. Task context and execution state do not require a session note.
+Needs `gh`; degrades silently without it. See
 [`docs/tmux.md`](docs/tmux.md#codespaces-remote-worktrees).
 
 The status-bar segments and popups are now **native `workspan` subcommands** (`workspan tmux git`,
 `tmux-goal`, `tmux-attn-count`, `tmux-done-badge`, `tmux-cockpit`, `tmux-help`,
-`tmux-note`, `tmux-keys`) — see `crates/bn-cli/src/cmd/tmux_status.rs` and `tmux_keys.rs`; quick-capture is `workspan add
-<section> --prompt` and `prefix e` inlines `nvim .`. (Worktree open/create/remove moved
+`tmux-keys`) — see `crates/bn-cli/src/cmd/tmux_status.rs` and `tmux_keys.rs`.
+Use `workspan task q` for quick capture and `prefix e` for the floating branch diff. (Worktree open/create/remove moved
 to native `workspan wt`; `wt-clone` → `workspan wt clone`, `wf-open` → `workspan open`.)
 
 The OS-branching adapter layer (`lib/adapters.sh`) and the bash worktree primitives

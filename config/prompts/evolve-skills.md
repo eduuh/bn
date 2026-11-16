@@ -57,7 +57,7 @@ apply only approved changes.
 
 6. **Report.** One line per skill: *skill — N reflections → change / no change*. If a reflection
    pointed at a real gap that's *not* a wording fix (a missing skill, a tool that should exist),
-   surface it as a `bn_add todo` rather than forcing it into an edit.
+   surface it as a Workspan task rather than forcing it into an edit.
 
 Be conservative: evolve on repeated evidence or an explicit requested policy, keep changes
 minimal, and never edit a skill file without showing the diff first. The goal is skills that

@@ -71,6 +71,26 @@ class SkillCommandTests(unittest.TestCase):
             ["`bn task` has no subcommand 'not-a-command'"],
         )
 
+    def test_workspan_invocations_are_checked(self):
+        self.assertEqual(
+            validator["check"](self.root, "workspan task not-a-command"),
+            ["`bn task` has no subcommand 'not-a-command'"],
+        )
+
+    def test_workspan_substitution_is_checked_but_quoted_prose_is_not(self):
+        snippet = 'echo "(workspan task not-a-command)" "$(workspan task not-a-command)"'
+        self.assertEqual(
+            validator["check"](self.root, snippet),
+            ["`bn task` has no subcommand 'not-a-command'"],
+        )
+
+    def test_compatibility_and_primary_commands_can_be_mixed(self):
+        snippet = "bn task --help && workspan task not-a-command"
+        self.assertEqual(
+            validator["check"](self.root, snippet),
+            ["`bn task` has no subcommand 'not-a-command'"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

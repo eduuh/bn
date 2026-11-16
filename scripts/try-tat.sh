@@ -22,8 +22,7 @@ B="${B:-$REPO_DIR/target/release/bn}"; B=$(realpath "$B") || exit 2
 REPO=bn
 BARE=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir)
 WT="$(dirname "$(dirname "$BARE")")/worktree/$REPO"
-NOTE_DIR=$(bn --path 2>/dev/null); MACHINE_DIR=$(dirname "$(dirname "$NOTE_DIR")")
-JOBS="$(dirname "$MACHINE_DIR")/jobs/$REPO"
+JOBS="$REPO_DIR/.bn/jobs"
 [ -x "$B" ] || { echo "build first:  cd $REPO_DIR && cargo build --release -p bn-cli" >&2; exit 1; }
 [ -d "$WT/_pool" ] || { echo "no warm pool at $WT/_pool — this harness needs one" >&2; exit 1; }
 USER_WIN=$(tmux display -p -t "${TMUX_PANE:?run me inside tmux}" '#{window_id}')

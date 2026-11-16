@@ -45,7 +45,7 @@ question short and offer likely answers as options.
    - arm one `manage_schedule` reminder per milestone at its time, whose prompt says: the
      outcome, the done-when check, the drafted message, and "ask whether it is met; if not, ask
      what is blocking and offer to re-plan";
-   - `bn add decision "Committed to <N> outcomes today: ..."`.
+   Keep the agreed outcomes and necessary scheduling decisions in that plan, not a second ledger.
    Say that reminders last only while this session is open.
 
 7. **Report** in under 8 lines: outcomes with times and the proposed first execution step, then

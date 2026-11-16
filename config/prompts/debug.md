@@ -4,7 +4,7 @@ description: "Reproduce and root-cause a known failure, fixing it only within th
 when: Reproduction, diagnosis or repair of a known failure was requested. Simple error explanations and log interpretation do not require this workflow.
 keywords: [debug, bug, fix, broken, failing, error, crash, regression, root cause, repro, why is this happening, not working]
 arguments:
-  - { name: symptom, description: The observed failure. Omit to take the note's top bug/blocker., required: false }
+  - { name: symptom, description: The observed failure. Omit to use the assigned task., required: false }
 ---
 Not open research (that's `investigate`) and not new work (that's `build-from-plan`). The discipline
 is **repro before fix, cause before patch**: a fix you can't reproduce failing you can't prove.
@@ -12,15 +12,15 @@ The requested scope determines whether the result is diagnosis or a verified cod
 For diagnosis-only requests, gather evidence without editing source or tests; do not add
 diagnostic logging that changes code.
 
-1. **Reproduce first.** Call `bn_cat` for context and `bn_ref` (no name) for the index of what past
+1. **Reproduce first.** Read the assigned task's context and call `bn_ref` (no name) for what past
    sessions already learned about this repo — this failure may be a known gotcha, and reading a
-   one-line index is cheaper than root-causing it twice. Take the symptom ({{symptom}}) or the note's top bug. Before
+   one-line index is cheaper than root-causing it twice. Take the symptom ({{symptom}}) or the assigned bug. Before
    touching a cause, make the failure happen *on demand* — ideally a failing test or an exact
    command + expected-vs-actual. If you can't reproduce it, that's the whole task: say so and pin
-   down the missing conditions before going further. Log the repro with `bn_add research`.
+   down the missing conditions before going further. Keep the repro evidence on the task.
 
 2. **Isolate.** Narrow from symptom to mechanism — bisect, add targeted logging, halve the search
-   space. Note what you *rule out* (`bn_add research`), not just hunches; the ruled-out paths are
+   space. Keep evidence of what you *rule out* on the task, not just hunches; the ruled-out paths are
    half the value. Keep going until you can point at the line/condition responsible.
    When the cause depends on runtime state, invoke `nvim-debug`; use observed frames and
    values rather than guessing from source.
@@ -31,7 +31,7 @@ diagnostic logging that changes code.
    complete your slice without further delegation unless the parent explicitly authorizes it.
 
 3. **Name the root cause before fixing.** State the actual cause in one line — the real reason, not
-   the surface symptom — and record it with `bn_add decision`. If you're fixing without being able
+   the surface symptom — and record the actionable cause on the task. If you're fixing without being able
    to say why it broke, you're guessing; go back to step 2.
 
 4. **Respect the requested write scope.** For a diagnosis-only request, report the repro,
@@ -50,8 +50,8 @@ diagnostic logging that changes code.
    the next session on this repo, not just this branch? If so, fold it into the repo's reference
    notes with `bn_ref_append` — one line, under `gotchas`, ending in where it came from and
    today's date (see `/bn:repo-reference`). This is the step that stops the same cause
-   being root-caused twice. Close the bug todo with `bn_done`.
+   being root-caused twice. Close the assigned bug with `workspan task do <id>` only when verified.
 
 7. **Report.** One line: *root cause → fix → verify PASS*. Then the repro, the cause, what changed,
-   and any follow-up filed. If it's a symptom of something deeper, `bn_add todo` the real fix
+   and any follow-up filed. If it's a symptom of something deeper, capture the real fix as a task
    rather than pretending the patch closed it.

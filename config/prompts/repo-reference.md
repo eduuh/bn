@@ -8,8 +8,8 @@ arguments:
 ---
 Before you re-derive knowledge about this repo from its source, find out whether a past session
 already wrote it down. That is what the **reference notes** are: durable facts about *this
-repository* — how it builds, where the seams are, which failures mislead — living beside the branch
-notes and outliving all of them.
+repository* — how it builds, where the seams are, which failures mislead. They are independent of
+task state and Entire's session history.
 
 1. **Read the index first.** Call `bn_ref` with `scope: "repo"` and no name (CLI: `bn ref --repo`). You get every
    note's name and one-line summary and nothing else — a handful of tokens. Do this before
@@ -47,7 +47,7 @@ Record {{question}} where the next session will find it. The reference notes are
 
 - Yes → a reference note. "The post-checkout hook prints `node: not found` in a non-login shell,
   so bn reports a failed switch that actually succeeded."
-- No → the branch note (`bn_add`), or `bn learned` for a personal lesson. "The test on my branch
+- No → the assigned task's context for actionable state, or Entire for session history. "The test on my branch
   fails because I forgot to rebuild the dependency" is not repo knowledge, it is Tuesday.
 
 **How to write one:**

@@ -158,8 +158,8 @@ its source. `bn next --json` carries the `category` per action for the prefix-J 
 
 `bn run <job>` resolves `<job>.sh` across tiers, first match wins (like PATH):
 
-1. **branch** — `<branch note dir>/jobs/`
-2. **repo** — `<repo>/main note dir/jobs/`
+1. **workspace** — the workspace artifact directory's `jobs/`
+2. **repo** — the shared repo-specific jobs directory
 3. **global · work notes** — `<work_root>/jobs/` (private, synced work notes)
 4. **global · personal notes** — `<personal_root>/jobs/` (private, synced personal notes)
 5. **global · shipped** — `$BN_JOBS_DIR`, default `~/.config/bn/jobs`, which `install.sh`
@@ -191,8 +191,8 @@ security framing, routing, state, and structured-output parsing.
 
 Agent resolution is first-match-wins by name:
 
-1. branch note `agents/`
-2. repo main-note `agents/`
+1. workspace artifact `agents/`
+2. shared repo `agents/`
 3. personal overlay `agents/`
 4. private work-notes `agents/`
 5. private personal-notes `agents/`
@@ -289,7 +289,7 @@ that silently halts every downstream systemd job. Unregister a systemd timer wit
 `Persistent=true` catches up a run missed while the machine was *off* — but some refreshes are
 tied to *when you start work*, which varies day to day and rarely lands on a fixed timer slot.
 For those, mark the manifest entry `catch_up = true`: on the **first bn event of the day** (any
-bn command — the SessionStart `bn --cat`, a `bn next`, anything), bn fires `bn run <job>
+bn command — a SessionStart discovery, `bn next`, or another command), bn fires `bn run <job>
 --if-stale` for each such job, detached. It's gated to once per day by a sentinel in the state
 dir, and `--if-stale` is a no-op when the job's timer already ran it today — so the job runs once
 a day at the earlier of *your first activity* or its `on_calendar` time, never twice. Both

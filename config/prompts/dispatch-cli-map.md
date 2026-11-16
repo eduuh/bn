@@ -3,7 +3,9 @@ name: dispatch-cli-map
 internal: true
 description: Shared MCP-to-CLI tool map injected into dispatch envelopes
 ---
-Without bn's MCP tools, use the CLI equivalents: `bn_cat` -> `bn --cat`, `bn_add` ->
-`bn add <section> <text>`, `bn_done` -> `bn done <id>`, `bn_goal` -> `bn goal <text>`,
-`bn_pr` -> `bn pr <url>`, `bn_context` -> `bn --cat`; any other `bn_*` tool name maps to the matching `bn <subcommand>`
+Use Workspan's CLI for execution and task state: `workspan discover`,
+`workspan task --repo .`, `workspan task doc <id>`, `workspan plan status`, and
+`workspan agent live`. Mark a task done with `workspan task do <id>` only when its criteria
+are met. Entire owns session history. Retained MCP command/link/reference tools may be used
+when available; inspect their actual schemas rather than guessing names or arguments.
 (`bn_ref_append` -> `bn ref append`).

@@ -15,13 +15,13 @@ opened in an unattended remote session is not a visible handoff.
 
 ## Local or attached remote tmux
 
-1. Make sure there is something to look at. Run `bn status --diff --three-dot` in the worktree. If it reports
+1. Make sure there is something to look at. Run `git diff --stat origin/main...HEAD` in the worktree,
+   substituting the repository's actual remote default branch. If it reports
    no changes vs the base, say so and stop — opening an editor on an empty diff wastes the gesture.
    Surface outstanding work; do not commit it merely to show a diff. Commit only explicitly
    authorized, owned changes under the `commit-privacy` requirements.
 
-   `--three-dot` is not optional garnish, and **never drop it to get the command to run**. Bare
-   `bn status --diff` is two-dot, which reports the *base's* own newer commits as if they were yours — on a
+   Three-dot is not optional garnish. A two-dot diff reports the *base's* own newer commits as if they were yours — on a
    worktree cut from a stale local main that turns a 30-file branch into a 79-file diff with
    thousands of phantom deletions. The editor itself always diffs three-dot, so a two-dot stat line
    describes something nobody is about to look at. If you quote it, you are describing the wrong
@@ -64,8 +64,7 @@ the actual Codespace checkout. Do not copy files locally or mount the repository
 1. Resolve the existing Codespace SSH alias and exact remote worktree path. Set up SSH access first
    if needed (`bn cs connect <codespace>`); reuse the intended account and Codespace, do not create one for
    a handoff. Check the branch, dirty state and three-dot diff **there**, not in the local clone.
-   Use `bn status --diff --three-dot` from that remote worktree when available; otherwise use
-   `git diff --stat '<base>...HEAD'`. Stop on an empty committed diff; surface any outstanding work
+   Use `git diff --stat '<base>...HEAD'` from that remote worktree. Stop on an empty committed diff; surface any outstanding work
    rather than silently committing someone else's changes.
 
 2. In local tmux, use the existing SSH popup:
@@ -119,7 +118,7 @@ the actual Codespace checkout. Do not copy files locally or mount the repository
   nvim's main loop, and bn gives up after 2 seconds with *"editor did not answer"*. Report that
   honestly rather than retrying in a loop; the fix is a keystroke in that pane, not another call.
 - **The installed `bn` predates this skill** — `error: unrecognized subcommand 'edit'`, or
-  `unexpected argument '--three-dot'`. The skill is not wrong and the flag is not gone: the binary
+  other command-version mismatches. The binary
   on `$PATH` is older than the worktree you are standing in, which is what a stale
   `worktree/bn/main` produces. Check with `bn --version` against the repo's own build. When you are
   inside the bn repo, `./target/debug/bn edit land` uses the code in front of you and works;

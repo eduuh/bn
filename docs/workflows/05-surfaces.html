@@ -43,8 +43,8 @@ never appear in help.
 <table>
 <thead><tr><th>Family</th><th>Commands that matter</th></tr></thead>
 <tbody>
-<tr><td><strong>Intake / dispatch</strong></td><td><code>bn add &lt;section&gt;</code>, <code>bn task q</code> (zero-friction inbox), <code>bn add --url &lt;url&gt;</code>, and the pivotal <code>bn dispatch</code> — resolves an item, cuts a worktree, seeds the goal, opens a tmux window</td></tr>
-<tr><td><strong>Note / review</strong></td><td><code>bn goal</code>, <code>bn done</code>, <code>bn cat</code>, <code>bn ingest</code>, <code>bn learned</code>, <code>bn reflect</code></td></tr>
+<tr><td><strong>Intake / dispatch</strong></td><td><code>workspan task add</code>, <code>workspan task q</code>, and <code>workspan dispatch</code> resolve work and launch an isolated workspace with its task packet</td></tr>
+<tr><td><strong>Context / review</strong></td><td><code>workspan task doc</code>, <code>workspan plan status</code>, <code>workspan ref</code>, and Entire's captured session history</td></tr>
 <tr><td><strong>Planning / time</strong></td><td><code>bn list --todos</code>, <code>bn task</code>, <code>bn daily</code>, <code>bn quarter</code>; <code>bn wrap</code>, <code>bn calib</code></td></tr>
 <tr><td><strong>Insight</strong></td><td><code>bn next</code> (the ranked "what now"), <code>bn search</code>, <code>bn stats metrics</code>, <code>bn next --stale</code>, <code>bn today</code></td></tr>
 <tr><td><strong>Automation</strong></td><td><code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn agent registry</code>, <code>bn agent resume</code></td></tr>
@@ -221,23 +221,18 @@ bn task add "fix flaky pool-slot reconcile test" --repo bn
 bn task enhance T14                       # SMART-gate it
 bn dispatch T14 --repo bn --name pool-reconcile-flake
 
-# Punch in and set the branch's goal (now inside the new worktree)
+# Read the assigned task and active plan (now inside the new worktree)
 bn in "pool reconcile flake" --tag dev
-bn goal "make the pool-slot reconcile test deterministic"
-bn add done-when "test passes 20x in a row"
-bn add todo "reproduce locally with a seeded clock"
+workspan task doc T14
+workspan plan status
 
-# Work. Capture as you go, without leaving the pane (prefix a / prefix b)
+# Work. Keep actionable context on the task; Entire captures session history.
 bn task q "leases.json holder can outlive every agent that held it"
-bn done t1
-bn add notes "root cause: reconcile ran before the tmux server exited"
 bn learned "reconcile the pool-slot ledger before trusting leases.json"
 
-# Ship
-bn build
-bn autopush "fix: deterministic pool-slot reconcile"
-bn pr https://github.com/owner/bn/pull/1234
-bn ingest                                 # fold the diffstat back into the note
+# Verify, then follow commit privacy and the authorized PR workflow.
+workspan verify
+# Record the authorized PR link on the governing task/provider.
 
 # Close the loop
 bn reflect "should have checked the lease ledger before the test"

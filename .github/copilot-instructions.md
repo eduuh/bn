@@ -2,47 +2,26 @@
 
 ## Workspan agent integration
 
-Workspan coordinates workspaces, agents, machines, and execution. Entire handles captured
-agent-session history. The `bn` command and MCP tool names remain compatibility interfaces.
+Workspan coordinates workspaces, tasks, agents, machines, and execution. Entire owns captured
+agent-session history and checkpoints. The `bn` executable and retained MCP names remain
+compatibility interfaces.
 
-### Legacy note tools
+Start with `workspan discover <task>`. Read actionable work with `workspan task --repo .` and the
+assigned task's context at the path printed by `workspan task doc <id>`. Use
+`workspan plan status` for an existing plan and `workspan agent live` for live agents.
+Do not create a task or plan merely to initialize a worktree.
 
-This repo's branch-note tools are served by a per-worktree stdio launcher (`bn mcp serve`) that
-your MCP client spawns automatically. They are scoped to the current worktree's branch note — the
-launcher derives its (repo, branch) from your working directory, so nothing needs to be running
-first. Workflows that still use legacy notes can access these compatibility tools:
+Keep acceptance progress, blockers, and necessary decisions on the governing task/provider.
+Mark work done with `workspan task do <id>` only when its criteria are met. Preserve file/Forge
+provider authority; do not silently substitute a local store when a remote provider fails.
+Do not create a second session transcript, memory ledger, or handoff packet.
 
-- `bn_context` — compact session-start orientation (goal, counts, top todos, blockers, PR,
-  next-step hints) in one call.
-- `bn_add` — record a todo / blocker / decision / research / collab / ask as it comes up.
-- `bn_done` — close a todo the moment it's finished.
-- `bn_cat` — read only the current branch note.
+The client launches `workspan mcp serve` over stdio in its worktree. Retained MCP capabilities
+serve commands, curated links, references, and workflow prompts; inspect their actual schemas.
+Use the CLI for tasks, execution, machines, and fleet operations. No session-note tools are
+needed. Existing historical files are archives, not an execution prerequisite.
 
-This is a deliberately slim tool surface for efficiency. The single-purpose tools (`bn_goal`,
-`bn_pr`, `bn_status`, `bn_sync`, `bn_handoff_read`, `bn_handoff_write`) are not advertised over
-MCP — use the `bn` CLI (`bn goal`, `bn pr`, `bn status`, `bn sync`, `bn handoff …`) when needed.
-If the MCP server is unavailable, keep working through the CLI instead of blocking: each `bn_*`
-tool maps to the same words after `bn` (`bn_context` → `bn status`, `bn_cat` → `bn cat`,
-`bn_add` → `bn add`, and `bn_done` → `bn done`).
-
-The MCP surface intentionally cannot target another repo or branch and does not expose
-cross-branch rollups, search, daily goals, reviews, metrics, attention queues, cron status, or
-agent fleet/session mining. Use the `bn` CLI explicitly for those broader workflows.
-
-Fleet orchestration is driven natively from the `bn` CLI — no tmux dashboard required. Drive and
-monitor agents across repos with `bn orchestrate` (`status`, `supervise [--all-repos]`,
-`scale`, `add`, `--queue`, `ask` / `answers`, `backlog --all-repos`) alongside `bn next` and
-`bn doctor`.
-
-Timing matters: every mutation is timestamped as it happens, so mark `bn_done` when the work
-actually happens — not batched at session end — and only record what genuinely occurred.
-
-Prompts are reusable workflows in `config/prompts/`. In Claude Code they are served as MCP prompts
-(`/bn:<name>`); in Copilot CLI they are installed as native skills referred to by their name (not
-`/mcp.bn.<name>` — Copilot does not surface MCP prompts). Every effective skill is served, so a
-prompt exists for each workflow the tiers define; use the CLI for cross-branch workflows, and note
-that some prompts (PR review, orchestration) describe steps whose commands live only in the CLI.
-Reference skills sit in `config/skills/` and are referred to by name from a prompt's body
-rather than invoked directly.
+Reusable workflows live in `config/prompts/`. Claude serves them as MCP prompts; Copilot installs
+native skills. Edit the Workspan source, not generated skill copies.
 
 <!-- END bn -->

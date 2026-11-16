@@ -60,8 +60,8 @@ bn forge dispatch <agent> --task <id> [--repo <repo>] [--agent <harness>] [--nam
 claimer. It does not dispatch local work.
 
 `dispatch` claims first, then starts existing `bn dispatch` with traceable item text in the form
-`Forge task <id>: <title>`. If dispatch fails after a successful claim, bn records a blocker in the
-current branch note and exits non-zero. The claim is not released unless Forge release semantics are
+`Forge task <id>: <title>`. If dispatch fails after a successful claim, it reports the concrete
+failure and exits non-zero. The claim is not released unless Forge release semantics are
 implemented explicitly.
 
 ## MCP transport

@@ -41,8 +41,8 @@ Repaint the tracker at the **top of each step** so the window shows live progres
 `bn review pr stage <step>`, appending ` --mine` when mine = yes (e.g. `bn review pr stage lint
 --mine`).
 
-1. **get-pr — ground on the change only.** `bn review pr stage get-pr`. Call `bn_cat` for any
-   recorded done-when criteria and the PR link. Read the PR's title/body with the host CLI above
+1. **get-pr — ground on the change only.** `bn review pr stage get-pr`. Read the review packet for
+   acceptance criteria and the PR link. Read the PR's title/body with the host CLI above
    and note its **base branch** from that output (usually `main`). Then read the diff **cold**
    with `git diff origin/<base>...HEAD` — the loop already checked this worktree out on the PR
    tip; if it looks wrong or dirty, stop and say so rather than reviewing the wrong code. Resist
@@ -66,8 +66,8 @@ Repaint the tracker at the **top of each step** so the window shows live progres
    (and `/security-review` for auth, input-handling or shell-exec changes) and fold its
    findings into the same deduplicated list. Then check the diff against **my coding-standards references** (the reference
    system to look out for): run `bn ref` to list them, then `bn ref <name>` for each one's full text
-   and flag any violation with a concrete `path:line`. Record notable ruled-out concerns
-   (`bn_add research`) — half the value is what you cleared.
+   and flag any violation with a concrete `path:line`. Include notable ruled-out concerns
+   in the review evidence — half the value is what you cleared.
 
 4. **test — conditionally.** `bn review pr stage test`. When the change touches
    testable code, run the targeted tests it affects (or `bn verify`'s build/test). Skip for
@@ -89,7 +89,7 @@ Repaint the tracker at the **top of each step** so the window shows live progres
 
 6. **verdict — record it (the one write).** `bn review pr stage verdict`. Synthesize
    **one** clear recommendation — approve, reject, or needs-work — with concrete reasons. Persist it
-   with the single command that writes the full judgement to the branch-note folder **and** the
+   with the single command that writes the full judgement to the review artifact **and** the
    attention queue:
    `bn review pr record {{repo}} {{number}} <approve|reject|needs-work> --notes -`
    (it pins the verdict to this worktree's HEAD sha automatically; pipe your long, multi-line

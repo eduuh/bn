@@ -309,7 +309,7 @@ repo's session, in that branch's window** — because that placement is the only
 `bn agent live`, the tab badges, the steer path and the kill path can find it at all. A hand-rolled
 `tmux new-session` gets you an agent no tool can see.
 
-**Launch through `bn dispatch`**, which leases a worktree, seeds the branch note with the task, and
+**Launch through `bn dispatch`**, which leases a worktree, supplies the task packet, and
 opens the window in the right session:
 
 ```bash
@@ -318,7 +318,7 @@ bn dispatch --repo <repo> --agent claude --skill investigate "<what to find out>
 ```
 
 `bn agent launch` is the same chokepoint when you are already in the worktree. Both record
-`agent-session:` on the note, which is what makes resume, steering and the dashboard work.
+the harness session in execution state, which makes resume, steering and the dashboard work.
 
 **Find them.**
 
@@ -370,7 +370,7 @@ reports `no such window` instead of quoting a same-prefixed neighbour.
 bn agent send <repo:branch> "<message>"            # delivers and returns the reply
 bn agent send <repo:branch> "<message>" --detach   # fire-and-forget; it reports via bn agent done
 bn agent answer <repo:branch> <option>             # resolve a blocked dialog, verified
-bn agent instruct <repo:branch> "<standing rule>"  # persists on the note, survives a relaunch
+bn agent instruct <repo:branch> "<standing rule>"  # persists in execution state across relaunches
 bn agent kill <repo:branch>                        # process tree, window, lease and pool slot
 ```
 

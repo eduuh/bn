@@ -15,5 +15,5 @@ Topic: {{topic}} (otherwise the branch goal).
 3. For an explicitly requested investigate-then-reviewed-plan pass, instead render
    `bn skills render investigate-and-plan` with task and url arguments from the request.
    Follow its research, review submission and STOP contract; do not implement after submission.
-4. Keep the durable plan under the branch note at the path `bn plan init` reports.
+4. Keep the durable plan at the path `workspan plan init` reports, independent of session history.
    Record decisions and unresolved questions, then report readiness.

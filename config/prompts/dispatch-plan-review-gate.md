@@ -18,7 +18,7 @@ owns the plan lifecycle: the workflow's "no active plan → stop and recommend `
 not apply here — you write the plan yourself, below.
 
 1. Investigate, then write the plan as Markdown — approach, touched files, risks — directly into
-   the bn-owned draft file `{{plan_file}}`, not into branch-note todo/done-when items.
+   the Workspan-owned draft file `{{plan_file}}`, not a duplicate task checklist.
 2. Submit that exact file, fan out the reviewers, and pause:
    `bn review submit --repo {{repo}} --branch {{branch}} --session {{session_id}} --reviewers {{reviewers}} --quorum {{quorum}} --plan-file {{plan_file}} [--label ...] [--path ...]`
    (include every source label and planned touched path so sensitive-plan checks cannot be
@@ -29,7 +29,7 @@ not apply here — you write the plan yourself, below.
    `consensus: no-consensus` must be resolved by a human.
 4. `approved`: promote the approved draft to the active plan with
    `bn plan promote {{session_id}}`, then implement it via the workflow's execution loop.
-   {{verification_requirement}} When the work is green, open the PR, run `bn ingest`, and report
+   {{verification_requirement}} When the work is green, open the authorized PR and report
    with `bn agent done --summary '<one line>' --pr <url>`.
 5. `changes-requested`: read `bn review show <id>`, revise, resubmit the same review, and poll again.
 6. `rejected`: stop without implementing and run

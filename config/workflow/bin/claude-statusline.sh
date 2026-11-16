@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# claude-statusline.sh — Claude Code statusLine: model, repo:branch, bn open todos/blockers.
-# Claude passes session JSON on stdin; the bn line is cheap and failure-tolerant.
+# claude-statusline.sh — Claude Code statusLine: model and Git worktree identity.
 set -u
 model=""
 if command -v jq >/dev/null 2>&1; then
@@ -8,5 +7,6 @@ if command -v jq >/dev/null 2>&1; then
 else
   cat >/dev/null
 fi
-note=$(timeout 2 bn status 2>/dev/null | head -1)
-printf '%s%s' "${model:+[$model] }" "${note:-$(basename "$PWD")}"
+repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+branch=$(git branch --show-current 2>/dev/null || true)
+printf '%s%s%s' "${model:+[$model] }" "$(basename "${repo:-$PWD}")" "${branch:+:$branch}"

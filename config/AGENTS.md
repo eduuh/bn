@@ -12,7 +12,8 @@
 ## Track work with Workspan
 
 - Run `workspan discover` at session start and when changing tasks. Pass the task and invoke the matching workflow instead of improvising.
-- Record progress as it happens. Save durable knowledge promptly.
+- Keep actionable progress, blockers, and acceptance criteria on the Workspan task/provider; use `workspan task doc <id>` for its context. Entire owns session history. Do not create a parallel session ledger or handoff packet.
+- Save verified contributor-wide knowledge in repository references with its source and date.
 - Keep links curated, not comprehensive. Before adding one, search `workspan links list <purpose> --tag <category>` and add only an important, repeatedly useful link that fills a real gap. Use `workspan links add <url> --category <category> --name "<what it is>"`; routine PRs, work items, review comments and one-off URLs do not belong.
 
 ## Talk to other agents
