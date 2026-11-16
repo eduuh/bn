@@ -1,9 +1,12 @@
 {
   "servers": {
     "bn": {
-      "type": "stdio",
+      "args": [
+        "mcp",
+        "serve"
+      ],
       "command": "bn",
-      "args": ["mcp", "serve"]
+      "type": "stdio"
     }
   }
 }

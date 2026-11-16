@@ -2,26 +2,41 @@
 
 ## Workspan agent integration
 
-Workspan coordinates workspaces, tasks, agents, machines, and execution. Entire owns captured
-agent-session history and checkpoints. The `bn` executable and retained MCP names remain
-compatibility interfaces.
+Workspan coordinates workspaces, agents, machines, and execution. Entire handles captured
+agent-session history. The `bn` command and MCP tool names remain compatibility interfaces.
 
-Start with `workspan discover <task>`. Read actionable work with `workspan task --repo .` and the
-assigned task's context at the path printed by `workspan task doc <id>`. Use
-`workspan plan status` for an existing plan and `workspan agent live` for live agents.
-Do not create a task or plan merely to initialize a worktree.
+### Tasks, execution, and references
 
-Keep acceptance progress, blockers, and necessary decisions on the governing task/provider.
-Mark work done with `workspan task do <id>` only when its criteria are met. Preserve file/Forge
-provider authority; do not silently substitute a local store when a remote provider fails.
-Do not create a second session transcript, memory ledger, or handoff packet.
+The configured file or Forge task provider owns actionable work. Use `workspan task` to inspect
+tasks, `workspan task doc <id>` for context and acceptance criteria, and `workspan task do <id>`
+when the task is actually complete. Task documents survive changes to the execution branch.
+Use `workspan plan status` / `workspan plan path` for the execution contract and
+`workspan pipeline status` / `workspan pipeline set <stage>` for execution state.
+Entire owns captured session history; do not create a parallel session-memory store.
 
-The client launches `workspan mcp serve` over stdio in its worktree. Retained MCP capabilities
-serve commands, curated links, references, and workflow prompts; inspect their actual schemas.
-Use the CLI for tasks, execution, machines, and fleet operations. No session-note tools are
-needed. Existing historical files are archives, not an execution prerequisite.
+The per-worktree stdio launcher (`bn mcp serve`) exposes only:
 
-Reusable workflows live in `config/prompts/`. Claude serves them as MCP prompts; Copilot installs
-native skills. Edit the Workspan source, not generated skill copies.
+- `bn_cmd` — list or run commands in the current workspace.
+- `bn_links_search` / `bn_links_add` — curated durable links.
+- `bn_ref` / `bn_ref_append` — reusable repository references and standards.
+
+Use the Workspan CLI for tasks, execution, attention, scheduling, and fleet operations.
+MCP workflow prompts remain available from the effective skills.
+
+Fleet orchestration is driven natively from the `bn` CLI — no tmux dashboard required. Drive and
+monitor agents across repos with `bn orchestrate` (`status`, `supervise [--all-repos]`,
+`scale`, `add`, `--queue`, `ask` / `answers`, `backlog --all-repos`) alongside `bn next` and
+`bn doctor`.
+
+Record task completion and execution transitions when they actually happen, not batched at
+session end. Record only what genuinely occurred.
+
+Prompts are reusable workflows in `config/prompts/`. In Claude Code they are served as MCP prompts
+(`/bn:<name>`); in Copilot CLI they are installed as native skills referred to by their name (not
+`/mcp.bn.<name>` — Copilot does not surface MCP prompts). Every effective skill is served, so a
+prompt exists for each workflow the tiers define; use the CLI for cross-branch workflows, and note
+that some prompts (PR review, orchestration) describe steps whose commands live only in the CLI.
+Reference skills sit in `config/skills/` and are referred to by name from a prompt's body
+rather than invoked directly.
 
 <!-- END bn -->
