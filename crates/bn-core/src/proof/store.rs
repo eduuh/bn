@@ -124,7 +124,7 @@ pub fn verdicts(cfg: &Config, ctx: &Resolved) -> (Vec<Verdict>, usize) {
     (rows, bad)
 }
 
-/// Refuse `for` ids that aren't this note's `done-when` criteria.
+/// Refuse unknown criteria or bindings without a persisted immutable task identity.
 fn bind_criteria(
     cfg: &Config,
     ctx: &Resolved,
@@ -144,11 +144,20 @@ fn bind_criteria(
                 known.join(", ")
             }
         ))),
-        None => Ok(criteria
+        None => criteria
             .into_iter()
             .filter(|criterion| ids.contains(&criterion.id))
-            .map(|criterion| (criterion.id, criterion.identity))
-            .collect()),
+            .map(|criterion| {
+                let identity = criterion.identity.ok_or_else(|| {
+                    ProofError::Invalid(format!(
+                        "cannot bind {}: governing task has no immutable UID; \
+                         persist one in the authoritative task store first",
+                        criterion.id,
+                    ))
+                })?;
+                Ok((criterion.id, identity))
+            })
+            .collect(),
     }
 }
 

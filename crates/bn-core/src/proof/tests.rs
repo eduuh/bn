@@ -47,6 +47,86 @@ fn ready_at(cfg: &Config, ctx: &Resolved, head: &str, f: Freshness) -> Readiness
     derive(&criteria, &listing.proofs, &v, Some(head), f, &|_, _| true)
 }
 
+fn accepted_task_proof(temp: &std::path::Path) -> (Config, Resolved) {
+    let (cfg, ctx) = setup(temp);
+    std::fs::write(
+        cfg.tasks_file(),
+        "ship evidence id:t6 uid:A repo:bn branch:feat doc:t1.md\n",
+    )
+    .unwrap();
+    add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    (cfg, ctx)
+}
+
+#[test]
+fn task_identity_proof_survives_union_merge_alias_healing() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = accepted_task_proof(temp.path());
+    let original = std::fs::read_to_string(cfg.tasks_file()).unwrap();
+    std::fs::write(
+        cfg.tasks_file(),
+        format!("merged task id:t6 uid:B repo:bn branch:other doc:b.md\n{original}"),
+    )
+    .unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    assert_eq!(task.id(), Some("t7"));
+    assert_eq!(task.uid(), Some("A"));
+    assert_eq!(task.meta("doc"), Some("t1.md"));
+    assert!(matches!(
+        ready_at(&cfg, &ctx, "abc", Freshness::Exact).items[0].state,
+        ItemState::Accepted { .. }
+    ));
+}
+
+#[test]
+fn task_identity_proof_cannot_transfer_to_another_uid_reusing_the_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = accepted_task_proof(temp.path());
+    std::fs::write(
+        cfg.tasks_file(),
+        "ship evidence id:t6 uid:B repo:bn branch:feat doc:t1.md\n",
+    )
+    .unwrap();
+    assert_eq!(
+        ready_at(&cfg, &ctx, "abc", Freshness::Exact).items[0].state,
+        ItemState::Unproven
+    );
+}
+
+#[test]
+fn task_identity_missing_uid_keeps_criteria_unproven_and_refuses_binding() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = accepted_task_proof(temp.path());
+    let legacy = "ship evidence id:t6 repo:bn branch:feat doc:t1.md\n";
+    std::fs::write(cfg.tasks_file(), legacy).unwrap();
+    let readiness = ready_at(&cfg, &ctx, "abc", Freshness::Exact);
+    assert_eq!(readiness.items.len(), 2);
+    assert!(readiness
+        .items
+        .iter()
+        .all(|item| item.state == ItemState::Unproven));
+    assert!(matches!(
+        add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t"),
+        Err(ProofError::Invalid(_))
+    ));
+    assert!(matches!(
+        link(&cfg, &ctx, "p1", &["w1".into()], AGENT),
+        Err(ProofError::Invalid(_))
+    ));
+    assert_eq!(std::fs::read_to_string(cfg.tasks_file()).unwrap(), legacy);
+}
+
 #[test]
 fn review_regression_accepted_proof_follows_content_not_checklist_position() {
     let temp = tempfile::tempdir().unwrap();

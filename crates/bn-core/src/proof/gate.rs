@@ -128,7 +128,10 @@ pub fn check_done(cfg: &Config, ctx: &Resolved, query: &str) -> DoneCheck {
 pub fn criteria(cfg: &Config, ctx: &Resolved) -> Vec<super::Criterion> {
     crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
         .and_then(|task| {
-            let scope = format!("{}:{}", cfg.tasks_provider.label(), task.id()?);
+            let scope = task
+                .uid()
+                .filter(|uid| !uid.is_empty())
+                .map(|uid| format!("{}:uid:{uid}", cfg.tasks_provider.label()));
             crate::task_doc::read(cfg, &task).map(|doc| (scope, doc))
         })
         .map(|(scope, doc)| {
@@ -137,7 +140,7 @@ pub fn criteria(cfg: &Config, ctx: &Resolved) -> Vec<super::Criterion> {
                 .enumerate()
                 .map(|(index, (done, text))| super::Criterion {
                     id: format!("w{}", index + 1),
-                    identity: format!("{scope}:{text}"),
+                    identity: scope.as_ref().map(|scope| format!("{scope}:{text}")),
                     text,
                     done: Some(done),
                 })

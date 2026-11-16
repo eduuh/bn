@@ -8,7 +8,8 @@ use std::collections::HashMap;
 pub struct Criterion {
     pub id: String,
     pub text: String,
-    pub identity: String,
+    /// Missing on legacy tasks without a persisted UID; never fall back to their mutable alias.
+    pub identity: Option<String>,
     pub done: Option<bool>,
 }
 
@@ -110,10 +111,9 @@ pub fn derive(
             let mine: Vec<&Proof> = proofs
                 .iter()
                 .filter(|p| {
-                    p.for_
-                        .iter()
-                        .any(|id| p.criteria.get(id) == Some(&w.identity))
-                        && !withdrawn.contains(&p.id.as_str())
+                    w.identity.as_ref().is_some_and(|identity| {
+                        p.for_.iter().any(|id| p.criteria.get(id) == Some(identity))
+                    }) && !withdrawn.contains(&p.id.as_str())
                 })
                 .collect();
             let verdict = |p: &Proof| last.get(p.id.as_str()).copied();
