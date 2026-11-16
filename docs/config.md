@@ -130,6 +130,11 @@ What a machine should do less of. Usually set in that machine's own file.
 |---|---|---|
 | `home` | none | The one machine the agent staff runs on. Unset, it runs anywhere. |
 
+### `[capture]` (legacy)
+
+`screenshot_dir` and `gif_dir` are still parsed for configuration compatibility, but no longer
+have an effect. Branch-note screenshot and recording commands have been retired.
+
 ### `[mcp]`
 
 | Key | Default | Meaning |
