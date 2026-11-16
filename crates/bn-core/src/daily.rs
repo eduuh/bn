@@ -15,7 +15,7 @@ mod item;
 use crate::fs::StoreError;
 use crate::resolver::Config;
 use crate::util;
-pub use item::{GoalNote, Item};
+pub use item::{GoalNote, Item, NoteInput, NoteOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -139,26 +139,6 @@ pub struct DropOutcome {
     pub id: String,
     pub text: String,
     pub link: Option<String>,
-}
-
-/// A note to connect to a goal (#564): a linked branch note (`repo` + `branch`) and/or attached
-/// free-text / uploaded content (`text`), optionally titled. [`connect_note`] normalizes each
-/// field (trim + drop-if-empty) and rejects an input that carries neither a complete link nor text.
-#[derive(Debug, Clone, Default)]
-pub struct NoteInput {
-    pub repo: Option<String>,
-    pub branch: Option<String>,
-    pub text: Option<String>,
-    pub title: Option<String>,
-}
-
-/// Result of connecting or disconnecting a goal note: the goal it now hangs on (id + text) and the
-/// affected [`GoalNote`] (the freshly-connected one, or the just-removed one).
-#[derive(Debug)]
-pub struct NoteOutcome {
-    pub goal_id: String,
-    pub goal_text: String,
-    pub note: GoalNote,
 }
 
 /// A follow-up queued for a future day. Lives in the scheduled queue (not a day file, which
