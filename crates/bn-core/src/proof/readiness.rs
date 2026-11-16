@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub struct Criterion {
     pub id: String,
     pub text: String,
+    pub identity: String,
     pub done: Option<bool>,
 }
 
@@ -108,7 +109,12 @@ pub fn derive(
         .map(|w| {
             let mine: Vec<&Proof> = proofs
                 .iter()
-                .filter(|p| p.for_.contains(&w.id) && !withdrawn.contains(&p.id.as_str()))
+                .filter(|p| {
+                    p.for_
+                        .iter()
+                        .any(|id| p.criteria.get(id) == Some(&w.identity))
+                        && !withdrawn.contains(&p.id.as_str())
+                })
                 .collect();
             let verdict = |p: &Proof| last.get(p.id.as_str()).copied();
             let accepted = |p: &Proof| {

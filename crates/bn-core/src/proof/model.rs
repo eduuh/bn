@@ -63,6 +63,9 @@ pub struct Proof {
     /// The `done-when` criteria (`w<N>`) this is evidence for.
     #[serde(default, rename = "for")]
     pub for_: Vec<String>,
+    /// Task-scoped criterion content at registration/link time, independent of positional labels.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub criteria: std::collections::BTreeMap<String, String>,
     pub title: String,
     /// The commit the evidence was taken at.
     #[serde(default, skip_serializing_if = "Option::is_none")]

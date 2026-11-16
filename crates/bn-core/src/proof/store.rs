@@ -125,9 +125,13 @@ pub fn verdicts(cfg: &Config, ctx: &Resolved) -> (Vec<Verdict>, usize) {
 }
 
 /// Refuse `for` ids that aren't this note's `done-when` criteria.
-fn check_criteria(cfg: &Config, ctx: &Resolved, ids: &[String]) -> Result<()> {
+fn bind_criteria(
+    cfg: &Config,
+    ctx: &Resolved,
+    ids: &[String],
+) -> Result<std::collections::BTreeMap<String, String>> {
     if ids.is_empty() {
-        return Ok(());
+        return Ok(std::collections::BTreeMap::new());
     }
     let criteria = super::gate::criteria(cfg, ctx);
     let known: Vec<&str> = criteria.iter().map(|w| w.id.as_str()).collect();
@@ -140,7 +144,11 @@ fn check_criteria(cfg: &Config, ctx: &Resolved, ids: &[String]) -> Result<()> {
                 known.join(", ")
             }
         ))),
-        None => Ok(()),
+        None => Ok(criteria
+            .into_iter()
+            .filter(|criterion| ids.contains(&criterion.id))
+            .map(|criterion| (criterion.id, criterion.identity))
+            .collect()),
     }
 }
 
@@ -185,7 +193,7 @@ pub fn add(cfg: &Config, ctx: &Resolved, new: &NewProof, now: &str) -> Result<Pr
     if new.title.trim().is_empty() {
         return Err(ProofError::Invalid("a proof needs a title".into()));
     }
-    check_criteria(cfg, ctx, &new.for_)?;
+    let criteria = bind_criteria(cfg, ctx, &new.for_)?;
     let d = dir(cfg, ctx);
     std::fs::create_dir_all(&d)?;
     let _lock = FileLock::acquire_required(&d.join(".proof"))?;
@@ -218,6 +226,7 @@ pub fn add(cfg: &Config, ctx: &Resolved, new: &NewProof, now: &str) -> Result<Pr
         id: pid(n),
         kind: new.kind,
         for_: new.for_.clone(),
+        criteria,
         title: new.title.trim().to_string(),
         sha: new.sha.clone(),
         dirty: new.dirty,
@@ -303,7 +312,7 @@ pub fn link(
     criteria: &[String],
     actor: &str,
 ) -> Result<Proof> {
-    check_criteria(cfg, ctx, criteria)?;
+    let bindings = bind_criteria(cfg, ctx, criteria)?;
     let d = dir(cfg, ctx);
     let _lock = FileLock::acquire_required(&d.join(".proof"))?;
     let listing = list(cfg, ctx);
@@ -317,6 +326,15 @@ pub fn link(
             proof.author, proof.id
         )));
     }
+    for (id, text) in &bindings {
+        if proof.criteria.get(id).is_some_and(|bound| bound != text) {
+            return Err(ProofError::Invalid(format!(
+                "{id} no longer names the requirement recorded by {id_proof}; record new evidence",
+                id_proof = proof.id,
+            )));
+        }
+    }
+    proof.criteria.extend(bindings);
     for c in criteria {
         if !proof.for_.contains(c) {
             proof.for_.push(c.clone());

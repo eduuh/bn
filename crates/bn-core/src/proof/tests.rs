@@ -48,6 +48,105 @@ fn ready_at(cfg: &Config, ctx: &Resolved, head: &str, f: Freshness) -> Readiness
 }
 
 #[test]
+fn review_regression_accepted_proof_follows_content_not_checklist_position() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = setup(temp.path());
+    add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified tests",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    for checklist in [
+        "## Done When\n- [ ] docs updated\n",
+        "## Done When\n- [ ] docs updated\n- [ ] tests pass\n",
+        "## Done When\n- [ ] unrelated requirement\n- [ ] docs updated\n",
+    ] {
+        crate::task_doc::write(&cfg, &task, checklist.into(), None).unwrap();
+        let readiness = ready_at(&cfg, &ctx, "abc", Freshness::Exact);
+        for item in readiness.items {
+            assert_eq!(
+                matches!(item.state, ItemState::Accepted { .. }),
+                item.text == "tests pass",
+                "evidence transferred to {} after editing {checklist:?}",
+                item.text,
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_unbound_proof_cannot_accept_current_criteria() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = setup(temp.path());
+    let mut proof = add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    proof.criteria.clear();
+    let criteria = super::gate::criteria(&cfg, &ctx);
+    let (verdicts, _) = verdicts(&cfg, &ctx);
+    let readiness = derive(
+        &criteria,
+        &[proof],
+        &verdicts,
+        Some("abc"),
+        Freshness::Exact,
+        &|_, _| true,
+    );
+    assert_eq!(readiness.items[0].state, ItemState::Unproven);
+}
+
+#[test]
+fn linking_cannot_silently_rebind_accepted_evidence_after_an_edit() {
+    let temp = tempfile::tempdir().unwrap();
+    let (cfg, ctx) = setup(temp.path());
+    add(&cfg, &ctx, &new(Kind::Test, &["w1"], "abc"), "t").unwrap();
+    judge(
+        &cfg,
+        &ctx,
+        "p1",
+        HUMAN,
+        Judgement::Accept,
+        "verified",
+        Some("abc"),
+        "t",
+    )
+    .unwrap();
+    let task = crate::pipeline::gate::governing_task(&cfg, &ctx.repo, &ctx.branch).unwrap();
+    crate::task_doc::write(
+        &cfg,
+        &task,
+        "## Done When\n- [ ] unrelated requirement\n".into(),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        link(&cfg, &ctx, "p1", &["w1".into()], AGENT),
+        Err(ProofError::Invalid(_))
+    ));
+    assert_eq!(
+        ready_at(&cfg, &ctx, "abc", Freshness::Exact).items[0].state,
+        ItemState::Unproven
+    );
+}
+
+#[test]
 fn identity_counts_the_worktree_only_under_a_harness() {
     assert_eq!(
         identity(None, None, true, Some("bn:feat"), "me").unwrap(),
